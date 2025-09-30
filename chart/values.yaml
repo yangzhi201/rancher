@@ -62,7 +62,7 @@ agentTLSMode: ""
 #   value: "1.0"
 
 # Fully qualified name to reach your Rancher server
-# hostname: rancher.my.org
+hostname: rancher.systec.dpdns.org
 
 ## Optional array of imagePullSecrets containing private registry credentials
 ## Ref: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
