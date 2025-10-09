@@ -106,8 +106,8 @@ var (
 	WinsAgentVersion                    = NewSetting("wins-agent-version", "")
 	CSIProxyAgentVersion                = NewSetting("csi-proxy-agent-version", "")
 	CSIProxyAgentURL                    = NewSetting("csi-proxy-agent-url", "https://acs-mirror.azureedge.net/csi-proxy/%[1]s/binaries/csi-proxy-%[1]s.tar.gz")
-	SystemAgentInstallScript            = NewSetting("system-agent-install-script", "https://github.com/rancher/system-agent/releases/download/v0.3.14-rc.1/install.sh") // To ensure consistency between SystemAgentInstallScript default value and CATTLE_SYSTEM_AGENT_INSTALL_SCRIPT to utilize the local system-agent-install.sh script when both values are equal.
-	WinsAgentInstallScript              = NewSetting("wins-agent-install-script", "https://raw.githubusercontent.com/rancher/wins/v0.5.3-rc.1/install.ps1")
+	SystemAgentInstallScript            = NewSetting("system-agent-install-script", "https://github.com/rancher/system-agent/releases/download/v0.3.14-rc.2/install.sh") // To ensure consistency between SystemAgentInstallScript default value and CATTLE_SYSTEM_AGENT_INSTALL_SCRIPT to utilize the local system-agent-install.sh script when both values are equal.
+	WinsAgentInstallScript              = NewSetting("wins-agent-install-script", "https://raw.githubusercontent.com/rancher/wins/v0.5.3-rc.2/install.ps1")
 	SystemAgentInstallerImage           = NewSetting("system-agent-installer-image", "") // Defined via environment variable
 	SystemAgentUpgradeImage             = NewSetting("system-agent-upgrade-image", "")   // Defined via environment variable
 	WinsAgentUpgradeImage               = NewSetting("wins-agent-upgrade-image", "")
@@ -135,7 +135,7 @@ var (
 	GKEUpstreamRefresh                  = NewSetting("gke-refresh", "300")
 	AlibabaUpstreamRefresh              = NewSetting("alibabacloud-refresh", "300")
 	HideLocalCluster                    = NewSetting("hide-local-cluster", "false")
-	MachineProvisionImage               = NewSetting("machine-provision-image", "rancher/machine:v0.15.0-rancher133")
+	MachineProvisionImage               = NewSetting("machine-provision-image", "rancher/machine:v0.15.0-rancher134")
 	SystemFeatureChartRefreshSeconds    = NewSetting("system-feature-chart-refresh-seconds", "21600")
 	ClusterAgentDefaultAffinity         = NewSetting("cluster-agent-default-affinity", ClusterAgentAffinity)
 	FleetAgentDefaultAffinity           = NewSetting("fleet-agent-default-affinity", FleetAgentAffinity)
@@ -176,6 +176,10 @@ var (
 	// DeleteInactiveUserAfter should be greater than AuthUserSessionTTLMinutes.
 	// An empty string or a zero value means the feature is disabled.
 	DeleteInactiveUserAfter = NewSetting("delete-inactive-user-after", "")
+
+	// DeleteMachineOnFailureAfter is the duration after which a machine job that failed to provision a machine will be deleted.
+	// The value should be expressed in valid time.Duration units. See https://pkg.go.dev/time#ParseDuration
+	DeleteMachineOnFailureAfter = NewSetting("delete-machine-on-failure-after", "0s")
 
 	// UserRetentionDryRun determines if the user retention process should actually disable and delete users.
 	// Valid values are "true" and "false". An empty string means "false".
@@ -240,6 +244,9 @@ var (
 
 	// RancherProvisioningCAPIVersion is the exact version of the cluster api controller that Rancher will install.
 	RancherProvisioningCAPIVersion = NewSetting("rancher-provisioning-capi-version", "")
+
+	// RancherTurtlesVersion is the exact version of the rancher-turtles chart that Rancher will install.
+	RancherTurtlesVersion = NewSetting("rancher-turtles-version", "")
 
 	// RKE2ChartDefaultBranch represents the default branch for the RKE2 charts repo.
 	RKE2ChartDefaultBranch = NewSetting("rke2-chart-default-branch", "main")
