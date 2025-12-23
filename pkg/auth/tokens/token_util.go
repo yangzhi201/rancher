@@ -15,8 +15,11 @@ import (
 	"github.com/rancher/rancher/pkg/auth/tokens/hashers"
 	"github.com/rancher/rancher/pkg/features"
 	"github.com/rancher/rancher/pkg/settings"
-	"github.com/rancher/rancher/pkg/user"
 	"github.com/sirupsen/logrus"
+)
+
+var (
+	errInvalidAuthToken = errors.New("invalid auth token value")
 )
 
 func SplitTokenParts(tokenID string) (string, string) {
@@ -102,7 +105,11 @@ func ConvertTokenResource(schema *types.Schema, token apiv3.Token) (map[string]i
 	return tokenData, nil
 }
 
-func GetKubeConfigToken(userName, responseType string, userMGR user.Manager, userPrincipal apiv3.Principal) (*apiv3.Token, string, error) {
+type kubeconfigTokenGetter interface {
+	GetKubeconfigToken(clusterName, tokenName, description, kind, userName string, userPrincipal apiv3.Principal) (*apiv3.Token, string, error)
+}
+
+func GetKubeConfigToken(userName, responseType string, kubeconfigTokenGetter kubeconfigTokenGetter, userPrincipal apiv3.Principal) (*apiv3.Token, string, error) {
 	// create kubeconfig expiring tokens if responseType=kubeconfig in login action vs login tokens for responseType=json
 	clusterID := extractClusterIDFromResponseType(responseType)
 
@@ -112,7 +119,7 @@ func GetKubeConfigToken(userName, responseType string, userMGR user.Manager, use
 		name = fmt.Sprintf("kubeconfig-%s.%s", userName, clusterID)
 	}
 
-	token, tokenVal, err := userMGR.GetKubeconfigToken(clusterID, name, "Kubeconfig token", "kubeconfig", userName, userPrincipal)
+	token, tokenVal, err := kubeconfigTokenGetter.GetKubeconfigToken(clusterID, name, "Kubeconfig token", "kubeconfig", userName, userPrincipal)
 	if err != nil {
 		return nil, "", err
 	}
@@ -130,10 +137,10 @@ func extractClusterIDFromResponseType(responseType string) string {
 
 // Given a stored token with hashed key, check if the provided (unhashed) tokenKey matches and is valid
 func VerifyToken(storedToken *apiv3.Token, tokenName, tokenKey string) (int, error) {
-	invalidAuthTokenErr := errors.New("Invalid auth token value")
 	if storedToken == nil || storedToken.Name != tokenName {
-		return http.StatusUnprocessableEntity, invalidAuthTokenErr
+		return http.StatusUnprocessableEntity, errInvalidAuthToken
 	}
+
 	if storedToken.Annotations != nil && storedToken.Annotations[TokenHashed] == "true" {
 		hasher, err := hashers.GetHasherForHash(storedToken.Token)
 		if err != nil {
@@ -142,19 +149,20 @@ func VerifyToken(storedToken *apiv3.Token, tokenName, tokenKey string) (int, err
 		}
 		if err := hasher.VerifyHash(storedToken.Token, tokenKey); err != nil {
 			logrus.Errorf("VerifyHash failed with error: %v", err)
-			return http.StatusUnprocessableEntity, invalidAuthTokenErr
+			return http.StatusUnprocessableEntity, errInvalidAuthToken
 		}
 	} else {
 		if storedToken.Token != tokenKey {
-			return http.StatusUnprocessableEntity, invalidAuthTokenErr
+			return http.StatusUnprocessableEntity, errInvalidAuthToken
 		}
 	}
+
 	if IsExpired(storedToken) {
 		return http.StatusGone, errors.New("must authenticate, expired")
 	}
 
 	if IsIdleExpired(storedToken, time.Now()) {
-		return http.StatusGone, errors.New("must authenticate, idle session timeout expired")
+		return http.StatusGone, errors.New("must authenticate, session idle timeout expired")
 	}
 
 	return http.StatusOK, nil

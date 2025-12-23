@@ -211,7 +211,7 @@ func Test_crtbHandler_reconcileSubject(t *testing.T) {
 
 func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 	type controllers struct {
-		rtController  *fake.MockNonNamespacedControllerInterface[*v3.RoleTemplate, *v3.RoleTemplateList]
+		crController  *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]
 		crbController *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRoleBinding, *rbacv1.ClusterRoleBindingList]
 	}
 	tests := []struct {
@@ -222,15 +222,15 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 		wantErr          bool
 	}{
 		{
-			name: "error getting role template",
+			name: "error getting cluster role",
 			crtb: &v3.ClusterRoleTemplateBinding{
 				RoleTemplateName: "test-rt",
 			},
 			setupControllers: func(c controllers) {
-				c.rtController.EXPECT().Get("test-rt", metav1.GetOptions{}).Return(nil, errDefault)
+				c.crController.EXPECT().Get("test-rt-aggregator", metav1.GetOptions{}).Return(nil, errDefault)
 			},
 			wantedCondition: &reducedCondition{
-				reason: failedToGetRoleTemplate,
+				reason: failedToGetClusterRole,
 				status: metav1.ConditionFalse,
 			},
 			wantErr: true,
@@ -239,8 +239,9 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 			name: "error creating cluster membership binding",
 			crtb: defaultCRTB.DeepCopy(),
 			setupControllers: func(c controllers) {
-				c.rtController.EXPECT().Get("test-rt", metav1.GetOptions{}).Return(&v3.RoleTemplate{
-					ObjectMeta: metav1.ObjectMeta{Name: "test-rt"},
+				c.crController.EXPECT().Get("test-rt-aggregator", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-rt-aggregator"},
+					Rules:      []rbacv1.PolicyRule{},
 				}, nil)
 
 				c.crbController.EXPECT().Get(defaultClusterCRB.Name, metav1.GetOptions{}).Return(nil, errDefault)
@@ -255,8 +256,9 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 			name: "cluster membership binding is created",
 			crtb: defaultCRTB.DeepCopy(),
 			setupControllers: func(c controllers) {
-				c.rtController.EXPECT().Get("test-rt", metav1.GetOptions{}).Return(&v3.RoleTemplate{
-					ObjectMeta: metav1.ObjectMeta{Name: "test-rt"},
+				c.crController.EXPECT().Get("test-rt-aggregator", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-rt-aggregator"},
+					Rules:      []rbacv1.PolicyRule{},
 				}, nil)
 
 				c.crbController.EXPECT().Get(defaultClusterCRB.Name, metav1.GetOptions{}).Return(nil, errNotFound)
@@ -272,7 +274,7 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			controllers := controllers{
-				rtController:  fake.NewMockNonNamespacedControllerInterface[*v3.RoleTemplate, *v3.RoleTemplateList](ctrl),
+				crController:  fake.NewMockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList](ctrl),
 				crbController: fake.NewMockNonNamespacedControllerInterface[*rbacv1.ClusterRoleBinding, *rbacv1.ClusterRoleBindingList](ctrl),
 			}
 			if tt.setupControllers != nil {
@@ -280,7 +282,7 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 			}
 			c := &crtbHandler{
 				s:             status.NewStatus(),
-				rtController:  controllers.rtController,
+				crController:  controllers.crController,
 				crbController: controllers.crbController,
 			}
 			localConditions := []metav1.Condition{}
@@ -294,19 +296,24 @@ func Test_crtbHandler_reconcileMembershipBindings(t *testing.T) {
 	}
 }
 
-func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
+const (
+	projectMGMT = "test-rt-project-mgmt-aggregator"
+	clusterMGMT = "test-rt-cluster-mgmt-aggregator"
+)
+
+func Test_crtbHandler_getDesiredRoleBindings(t *testing.T) {
 	tests := []struct {
 		name               string
 		crtb               *v3.ClusterRoleTemplateBinding
 		setupCRBController func(*fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList])
-		want               map[string]*rbacv1.ClusterRoleBinding
+		want               map[string]*rbacv1.RoleBinding
 		wantErr            bool
 	}{
 		{
 			name: "error getting project management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(nil, errDefault)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(nil, errDefault)
 			},
 			wantErr: true,
 		},
@@ -314,8 +321,8 @@ func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
 			name: "error getting cluster management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(nil, errNotFound)
-				m.EXPECT().Get("test-rt-cluster-mgmt", metav1.GetOptions{}).Return(nil, errDefault)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(nil, errNotFound)
+				m.EXPECT().Get(clusterMGMT, metav1.GetOptions{}).Return(nil, errDefault)
 			},
 			wantErr: true,
 		},
@@ -323,30 +330,31 @@ func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
 			name: "no cluster or project management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(nil, errNotFound)
-				m.EXPECT().Get("test-rt-cluster-mgmt", metav1.GetOptions{}).Return(nil, errNotFound)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(nil, errNotFound)
+				m.EXPECT().Get(clusterMGMT, metav1.GetOptions{}).Return(nil, errNotFound)
 			},
-			want: map[string]*rbacv1.ClusterRoleBinding{},
+			want: map[string]*rbacv1.RoleBinding{},
 		},
 		{
 			name: "found project management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
-				m.EXPECT().Get("test-rt-cluster-mgmt", metav1.GetOptions{}).Return(nil, errNotFound)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
+				m.EXPECT().Get(clusterMGMT, metav1.GetOptions{}).Return(nil, errNotFound)
 			},
-			want: map[string]*rbacv1.ClusterRoleBinding{
-				"crb-5x2rfzlbvz": {
+			want: map[string]*rbacv1.RoleBinding{
+				"rb-visjzlqzqw": {
 					ObjectMeta: metav1.ObjectMeta{
-						Name:   "crb-5x2rfzlbvz",
-						Labels: map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
+						Name:      "rb-visjzlqzqw",
+						Namespace: "test-namespace",
+						Labels:    map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
 					},
 					RoleRef: rbacv1.RoleRef{
 						APIGroup: "rbac.authorization.k8s.io",
 						Kind:     "ClusterRole",
-						Name:     "test-rt-project-mgmt-aggregator",
+						Name:     projectMGMT,
 					},
-					Subjects: defaultCRB.Subjects,
+					Subjects: defaultRB.Subjects,
 				},
 			},
 		},
@@ -354,21 +362,22 @@ func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
 			name: "found cluster management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(nil, errNotFound)
-				m.EXPECT().Get("test-rt-cluster-mgmt", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(nil, errNotFound)
+				m.EXPECT().Get(clusterMGMT, metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
 			},
-			want: map[string]*rbacv1.ClusterRoleBinding{
-				"crb-meemnnklov": {
+			want: map[string]*rbacv1.RoleBinding{
+				"rb-lhchhtbxqn": {
 					ObjectMeta: metav1.ObjectMeta{
-						Name:   "crb-meemnnklov",
-						Labels: map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
+						Name:      "rb-lhchhtbxqn",
+						Namespace: "test-namespace",
+						Labels:    map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
 					},
 					RoleRef: rbacv1.RoleRef{
 						APIGroup: "rbac.authorization.k8s.io",
 						Kind:     "ClusterRole",
-						Name:     "test-rt-cluster-mgmt-aggregator",
+						Name:     clusterMGMT,
 					},
-					Subjects: defaultCRB.Subjects,
+					Subjects: defaultRB.Subjects,
 				},
 			},
 		},
@@ -376,33 +385,35 @@ func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
 			name: "found both project and cluster management plane role",
 			crtb: defaultCRTB.DeepCopy(),
 			setupCRBController: func(m *fake.MockNonNamespacedControllerInterface[*rbacv1.ClusterRole, *rbacv1.ClusterRoleList]) {
-				m.EXPECT().Get("test-rt-project-mgmt", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
-				m.EXPECT().Get("test-rt-cluster-mgmt", metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
+				m.EXPECT().Get(projectMGMT, metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
+				m.EXPECT().Get(clusterMGMT, metav1.GetOptions{}).Return(&rbacv1.ClusterRole{}, nil)
 			},
-			want: map[string]*rbacv1.ClusterRoleBinding{
-				"crb-meemnnklov": {
+			want: map[string]*rbacv1.RoleBinding{
+				"rb-lhchhtbxqn": {
 					ObjectMeta: metav1.ObjectMeta{
-						Name:   "crb-meemnnklov",
-						Labels: map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
+						Name:      "rb-lhchhtbxqn",
+						Namespace: "test-namespace",
+						Labels:    map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
 					},
 					RoleRef: rbacv1.RoleRef{
 						APIGroup: "rbac.authorization.k8s.io",
 						Kind:     "ClusterRole",
-						Name:     "test-rt-cluster-mgmt-aggregator",
+						Name:     clusterMGMT,
 					},
-					Subjects: defaultCRB.Subjects,
+					Subjects: defaultRB.Subjects,
 				},
-				"crb-5x2rfzlbvz": {
+				"rb-visjzlqzqw": {
 					ObjectMeta: metav1.ObjectMeta{
-						Name:   "crb-5x2rfzlbvz",
-						Labels: map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
+						Name:      "rb-visjzlqzqw",
+						Namespace: "test-namespace",
+						Labels:    map[string]string{"authz.cluster.cattle.io/crtb-owner-test-crtb": "true"},
 					},
 					RoleRef: rbacv1.RoleRef{
 						APIGroup: "rbac.authorization.k8s.io",
 						Kind:     "ClusterRole",
-						Name:     "test-rt-project-mgmt-aggregator",
+						Name:     projectMGMT,
 					},
-					Subjects: defaultCRB.Subjects,
+					Subjects: defaultRB.Subjects,
 				},
 			},
 		},
@@ -418,13 +429,13 @@ func Test_crtbHandler_getDesiredClusterRoleBindings(t *testing.T) {
 				s:            status.NewStatus(),
 				crController: crController,
 			}
-			got, err := c.getDesiredClusterRoleBindings(tt.crtb)
+			got, err := c.getDesiredRoleBindings(tt.crtb)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("crtbHandler.getDesiredClusterRoleBindings() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("crtbHandler.getDesiredRoleBindings() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("crtbHandler.getDesiredClusterRoleBindings() = %v, want %v", got, tt.want)
+				t.Errorf("crtbHandler.getDesiredRoleBindings() = %v, want %v", got, tt.want)
 			}
 		})
 	}

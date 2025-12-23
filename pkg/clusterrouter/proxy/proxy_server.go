@@ -279,7 +279,7 @@ func (r *RemoteService) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				}
 				req.Header.Del("Impersonate-User")
 				req.Header.Del("Impersonate-Group")
-				for k, _ := range req.Header {
+				for k := range req.Header {
 					if strings.HasPrefix(k, "Impersonate-Extra") {
 						req.Header.Del(k)
 					}
@@ -346,21 +346,14 @@ func getImpersonatorAccountToken(user user.Info, clusterContextGetter ClusterCon
 	if err != nil {
 		return "", err
 	}
-
-	i, err := impersonation.New(user, clusterContext)
+	impersonator, err := impersonation.ForCluster(clusterContext)
 	if err != nil {
-		return "", fmt.Errorf("error creating impersonation for user %s: %w", user.GetUID(), err)
+		return "", fmt.Errorf("unable to create impersonator for cluster %q: %w", clusterName, err)
 	}
-
-	sa, err := i.SetUpImpersonation()
-	if err != nil {
-		return "", fmt.Errorf("error setting up impersonation for user %s: %w", user.GetUID(), err)
-	}
-	saToken, err := i.GetToken(sa)
+	saToken, err := impersonator.GetToken(user)
 	if err != nil {
 		return "", fmt.Errorf("error getting service account token: %w", err)
 	}
-
 	return saToken, nil
 }
 

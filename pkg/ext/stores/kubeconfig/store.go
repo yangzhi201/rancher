@@ -49,6 +49,7 @@ import (
 	"k8s.io/client-go/features"
 	"k8s.io/kubernetes/pkg/printers"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
+	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 )
 
 const (
@@ -93,8 +94,8 @@ const (
 
 var gvr = ext.SchemeGroupVersion.WithResource(ext.KubeconfigResourceName)
 
-// userManager abstracts [user.Manager].
-type userManager interface {
+// tokenCreator abstracts [tokens.Manager].
+type tokenCreator interface {
 	EnsureClusterToken(clusterID string, input user.TokenInput) (string, runtime.Object, error)
 	EnsureToken(input user.TokenInput) (string, runtime.Object, error)
 }
@@ -114,7 +115,7 @@ type Store struct {
 	tokenCache          ctrlv3.TokenCache
 	tokens              ctrlv3.TokenClient
 	userCache           ctrlv3.UserCache
-	userMgr             userManager
+	tokenMgr            tokenCreator
 	getCACert           func() string
 	getDefaultTTL       func() (*int64, error)
 	getServerURL        func() string
@@ -123,7 +124,7 @@ type Store struct {
 }
 
 // New creates a new instance of [Store].
-func New(mcmEnabled bool, wranglerContext *wrangler.Context, authorizer authorizer.Authorizer, userMgr userManager) *Store {
+func New(mcmEnabled bool, wranglerContext *wrangler.Context, authorizer authorizer.Authorizer) *Store {
 	store := &Store{
 		mcmEnabled:      mcmEnabled,
 		configMapCache:  wranglerContext.Core.ConfigMap().Cache(),
@@ -134,7 +135,7 @@ func New(mcmEnabled bool, wranglerContext *wrangler.Context, authorizer authoriz
 		tokenCache:      wranglerContext.Mgmt.Token().Cache(),
 		tokens:          wranglerContext.Mgmt.Token(),
 		userCache:       wranglerContext.Mgmt.User().Cache(),
-		userMgr:         userMgr,
+		tokenMgr:        tokens.NewManager(wranglerContext),
 		authorizer:      authorizer,
 		getCACert:       settings.CACerts.Get,
 		getDefaultTTL:   tokens.GetKubeconfigDefaultTokenTTLInMilliSeconds,
@@ -357,9 +358,9 @@ func (s *Store) Create(
 				clusters = clusters[:len(clusters)-1]
 				i--
 				continue
-			} else {
-				return nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("user %s is not allowed to access cluster %s", userInfo.GetName(), clusters[i].Name))
 			}
+
+			return nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("user %s is not allowed to access cluster %s", userInfo.GetName(), clusters[i].Name))
 		}
 
 		if currentContext == "" && kubeconfig.Spec.CurrentContext == clusters[i].Name {
@@ -448,7 +449,7 @@ func (s *Store) Create(
 		// Generate a shared token for the default and non-ACE clusters.
 		if !dryRun && generateToken {
 			input := s.createTokenInput(kubeConfigID, userInfo.GetName(), authToken, &ttlMilliseconds)
-			sharedTokenKey, sharedToken, err = s.userMgr.EnsureToken(input)
+			sharedTokenKey, sharedToken, err = s.tokenMgr.EnsureToken(input)
 			if err != nil {
 				conditions = append(conditions, metav1.Condition{
 					Type:               FailedToCreateTokenCond,
@@ -535,7 +536,7 @@ func (s *Store) Create(
 			// Generate a cluster-scoped token for the ACE cluster.
 			if !dryRun && generateToken {
 				input := s.createTokenInput(kubeConfigID, userInfo.GetName(), authToken, &ttlMilliseconds)
-				tokenKey, token, err = s.userMgr.EnsureClusterToken(cluster.Name, input)
+				tokenKey, token, err = s.tokenMgr.EnsureClusterToken(cluster.Name, input)
 				if err != nil {
 					conditions = append(conditions, metav1.Condition{
 						Type:               FailedToCreateTokenCond,
@@ -744,6 +745,13 @@ func (s *Store) toConfigMap(kubeconfig *ext.Kubeconfig) (*corev1.ConfigMap, erro
 		configMap.Data[StatusTokensField] = string(serialized)
 	}
 
+	var err error
+	configMap.ObjectMeta.ManagedFields, err = extcommon.MapManagedFields(mapFromKubeconfig,
+		kubeconfig.ObjectMeta.ManagedFields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to map kubeconfig managed-fields: %w", err)
+	}
+
 	return configMap, nil
 }
 
@@ -795,6 +803,12 @@ func (s *Store) fromConfigMap(configMap *corev1.ConfigMap) (*ext.Kubeconfig, err
 		if err != nil {
 			return nil, fmt.Errorf("error unmarshaling status.tokens for %s: %w", configMap.Name, err)
 		}
+	}
+
+	kubeconfig.ObjectMeta.ManagedFields, err = extcommon.MapManagedFields(mapFromConfigMap,
+		kubeconfig.ObjectMeta.ManagedFields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to map configmap managed-fields: %w", err)
 	}
 
 	return kubeconfig, nil
@@ -1029,6 +1043,9 @@ func (s *Store) Watch(
 							ResourceVersion: configMap.ResourceVersion,
 						},
 					}
+				case watch.Error:
+					// Pass through the errors e.g. 410 Expired.
+					obj = event.Object
 				case watch.Added, watch.Modified, watch.Deleted:
 					configMap, ok := event.Object.(*corev1.ConfigMap)
 					if !ok {
@@ -1457,7 +1474,7 @@ func (s *Store) GroupVersionKind(gv schema.GroupVersion) schema.GroupVersionKind
 func (s *Store) Destroy() {}
 
 // NamespaceScoped implements [rest.Scoper].
-func (t *Store) NamespaceScoped() bool {
+func (s *Store) NamespaceScoped() bool {
 	return false
 }
 
@@ -1475,4 +1492,41 @@ var (
 	_ rest.Scoper                   = &Store{}
 	_ rest.SingularNameProvider     = &Store{}
 	_ rest.GroupVersionKindProvider = &Store{}
+)
+
+var (
+	pathCMData                  = fieldpath.MakePathOrDie("data")
+	pathCMClustersField         = fieldpath.MakePathOrDie("data", "clusters")
+	pathCMCurrentContextField   = fieldpath.MakePathOrDie("data", "current-context")
+	pathCMDescriptionField      = fieldpath.MakePathOrDie("data", "description")
+	pathCMTTLField              = fieldpath.MakePathOrDie("data", "ttl")
+	pathCMStatusConditionsField = fieldpath.MakePathOrDie("data", "status-conditions")
+	pathCMStatusSummaryField    = fieldpath.MakePathOrDie("data", "status-summary")
+	pathCMStatusTokensField     = fieldpath.MakePathOrDie("data", "status-tokens")
+
+	pathCMLabelKind = fieldpath.MakePathOrDie("metadata", "labels", KindLabel)
+
+	pathKConfigClustersField       = fieldpath.MakePathOrDie("spec", "clusters")
+	pathKConfigCurrentContextField = fieldpath.MakePathOrDie("spec", "currentContext")
+	pathKConfigDescriptionField    = fieldpath.MakePathOrDie("spec", "description")
+	pathKConfigTTLField            = fieldpath.MakePathOrDie("spec", "ttl")
+
+	mapFromConfigMap = extcommon.MapSpec{
+		pathCMData.String():                  nil,
+		pathCMClustersField.String():         pathKConfigClustersField,
+		pathCMCurrentContextField.String():   pathKConfigCurrentContextField,
+		pathCMDescriptionField.String():      pathKConfigDescriptionField,
+		pathCMTTLField.String():              pathKConfigTTLField,
+		pathCMStatusConditionsField.String(): nil,
+		pathCMStatusSummaryField.String():    nil,
+		pathCMStatusTokensField.String():     nil,
+		pathCMLabelKind.String():             nil,
+	}
+
+	mapFromKubeconfig = extcommon.MapSpec{
+		pathKConfigClustersField.String():       pathCMClustersField,
+		pathKConfigCurrentContextField.String(): pathCMCurrentContextField,
+		pathKConfigDescriptionField.String():    pathCMDescriptionField,
+		pathKConfigTTLField.String():            pathCMTTLField,
+	}
 )

@@ -44,14 +44,13 @@ import (
 	"github.com/rancher/rancher/pkg/wrangler"
 	steve "github.com/rancher/steve/pkg/server"
 	"github.com/rancher/wrangler/v3/pkg/generated/controllers/core"
-	wcorev1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/v3/pkg/generated/controllers/rbac"
-	wrbacv1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/rbac/v1"
 	"github.com/rancher/wrangler/v3/pkg/generic"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8sauthuser "k8s.io/apiserver/pkg/authentication/user"
 	k8dynamic "k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -197,6 +196,14 @@ type ManagementContext struct {
 	Wrangler   *wrangler.Context
 }
 
+// Impersonator allows managing user impersonation for a given cluster
+type Impersonator interface {
+	// SetUpImpersonation creates a service account on a cluster with a clusterrole and clusterrolebinding allowing it to impersonate a Rancher user.
+	SetUpImpersonation(k8sauthuser.Info) error
+	// GetToken retrieves the impersonated ServiceAccount token for an upstream user
+	GetToken(k8sauthuser.Info) (string, error)
+}
+
 type UserContext struct {
 	Management        *ManagementContext
 	ClusterName       string
@@ -207,12 +214,13 @@ type UserContext struct {
 	K8sClient         kubernetes.Interface
 	runContext        context.Context
 
+	Impersonator Impersonator
+
 	APIAggregation apiregistrationv1.Interface
 	Apps           appsv1.Interface
 	Autoscaling    autoscaling.Interface
 	Catalog        catalog.Interface
 	Project        projectv3.Interface
-	Core           corev1.Interface
 	Extensions     extv1beta1.Interface
 	BatchV1        batchv1.Interface
 	Networking     knetworkingv1.Interface
@@ -220,8 +228,9 @@ type UserContext struct {
 	Storage        storagev1.Interface
 	Plan           upgrade.Interface // the field is initialized only for rancher-provisioned rke2/k3s cluster
 
-	RBACw wrbacv1.Interface
-	Corew wcorev1.Interface
+	// these interfaces are a subset of the original APIs, restricting their access in order to prevent accidentally adding new downstream caches
+	RBACw rbacInterface
+	Corew coreInterface
 
 	K3s k3s.Interface
 
@@ -293,26 +302,6 @@ func (w *UserContext) deferredStartAsync(ctx context.Context, register func(ctx 
 			cancel()
 		}()
 		return nil
-	}
-}
-
-func (w *UserContext) UserOnlyContext() *UserOnlyContext {
-	return &UserOnlyContext{
-		Schemas:           w.Management.Schemas,
-		ClusterName:       w.ClusterName,
-		RESTConfig:        w.RESTConfig,
-		UnversionedClient: w.UnversionedClient,
-		K8sClient:         w.K8sClient,
-
-		Autoscaling: w.Autoscaling,
-		Apps:        w.Apps,
-		Project:     w.Project,
-		Core:        w.Core,
-		Extensions:  w.Extensions,
-		Networking:  w.Networking,
-		BatchV1:     w.BatchV1,
-		Cluster:     w.Cluster,
-		Storage:     w.Storage,
 	}
 }
 
@@ -391,10 +380,11 @@ func newManagementContext(c *ScaledContext) (*ManagementContext, error) {
 func NewUserContext(scaledContext *ScaledContext, config rest.Config, clusterName string) (*UserContext, error) {
 	var err error
 	context := &UserContext{
-		RESTConfig:     *steve.RestConfigDefaults(&config),
-		ClusterName:    clusterName,
-		runContext:     scaledContext.RunContext,
-		KindNamespaces: map[schema.GroupVersionKind]string{},
+		RESTConfig:               *steve.RestConfigDefaults(&config),
+		ClusterName:              clusterName,
+		runContext:               scaledContext.RunContext,
+		KindNamespaces:           map[schema.GroupVersionKind]string{},
+		extraControllerFactories: map[string]controller.SharedControllerFactory{},
 	}
 
 	context.Management, err = scaledContext.NewManagementContext()
@@ -424,7 +414,6 @@ func NewUserContext(scaledContext *ScaledContext, config rest.Config, clusterNam
 	}
 
 	context.Apps = appsv1.NewFromControllerFactory(controllerFactory)
-	context.Core = corev1.NewFromControllerFactory(controllerFactory)
 	context.Project = projectv3.NewFromControllerFactory(controllerFactory)
 	context.Storage = storagev1.NewFromControllerFactory(controllerFactory)
 	context.Networking = knetworkingv1.NewFromControllerFactory(controllerFactory)
@@ -448,7 +437,7 @@ func NewUserContext(scaledContext *ScaledContext, config rest.Config, clusterNam
 	if err != nil {
 		return nil, err
 	}
-	context.Corew = corew.Core().V1()
+	context.Corew = coreInterface{corew}
 
 	ctlg, err := catalog.NewFactoryFromConfigWithOptions(&context.RESTConfig, &catalog.FactoryOptions{SharedControllerFactory: controllerFactory})
 	if err != nil {

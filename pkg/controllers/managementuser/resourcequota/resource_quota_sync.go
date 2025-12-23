@@ -8,11 +8,12 @@ import (
 
 	"github.com/rancher/norman/types/convert"
 	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	wmgmtv3 "github.com/rancher/rancher/pkg/generated/controllers/management.cattle.io/v3"
 	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
-	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	namespaceutil "github.com/rancher/rancher/pkg/namespace"
 	validate "github.com/rancher/rancher/pkg/resourcequota"
 	"github.com/rancher/rancher/pkg/utils"
+	corew "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -36,16 +37,16 @@ SyncController takes care of creating Kubernetes resource quota based on the res
 defined in namespace.resourceQuota
 */
 type SyncController struct {
-	ProjectLister       v3.ProjectLister
-	Namespaces          v1.NamespaceInterface
-	ResourceQuotas      v1.ResourceQuotaInterface
-	ResourceQuotaLister v1.ResourceQuotaLister
-	LimitRange          v1.LimitRangeInterface
-	LimitRangeLister    v1.LimitRangeLister
+	ProjectCache        wmgmtv3.ProjectCache
+	Namespaces          corew.NamespaceClient
+	ResourceQuotas      corew.ResourceQuotaClient
+	ResourceQuotaLister corew.ResourceQuotaCache
+	LimitRange          corew.LimitRangeClient
+	LimitRangeLister    corew.LimitRangeCache
 	NsIndexer           clientcache.Indexer
 }
 
-func (c *SyncController) syncResourceQuota(key string, ns *corev1.Namespace) (runtime.Object, error) {
+func (c *SyncController) syncResourceQuota(_ string, ns *corev1.Namespace) (*corev1.Namespace, error) {
 	if ns == nil || ns.DeletionTimestamp != nil {
 		return nil, nil
 	}
@@ -169,9 +170,12 @@ func (c *SyncController) CreateResourceQuota(ns *corev1.Namespace) (runtime.Obje
 	case "delete":
 		updatedNs := ns.DeepCopy()
 		delete(updatedNs.Annotations, resourceQuotaAnnotation)
-		updatedNs, err = c.Namespaces.Update(updatedNs)
-		if err != nil {
-			return updatedNs, err
+		// avoid updates if nothing would change
+		if !reflect.DeepEqual(updatedNs, ns) {
+			updatedNs, err = c.Namespaces.Update(updatedNs)
+			if err != nil {
+				return updatedNs, err
+			}
 		}
 		operationErr = c.deleteResourceQuota(existing)
 	}
@@ -191,10 +195,18 @@ func (c *SyncController) CreateResourceQuota(ns *corev1.Namespace) (runtime.Obje
 	}
 	toUpdate := updated.DeepCopy()
 	namespaceutil.SetNamespaceCondition(toUpdate, time.Second*1, ResourceQuotaInitCondition, true, "")
+	// avoid updates if nothing would change
+	if reflect.DeepEqual(toUpdate, updated) {
+		return updated, nil
+	}
 	return c.Namespaces.Update(toUpdate)
 }
 
 func (c *SyncController) updateResourceQuota(quota *corev1.ResourceQuota, spec *corev1.ResourceQuotaSpec) error {
+	// avoid updates if nothing would change
+	if reflect.DeepEqual(quota.Spec, *spec) {
+		return nil
+	}
 	toUpdate := quota.DeepCopy()
 	toUpdate.Spec = *spec
 	logrus.Infof("Updating default resource quota for namespace %v", toUpdate.Namespace)
@@ -203,6 +215,10 @@ func (c *SyncController) updateResourceQuota(quota *corev1.ResourceQuota, spec *
 }
 
 func (c *SyncController) updateDefaultLimitRange(limitRange *corev1.LimitRange, spec *corev1.LimitRangeSpec) error {
+	// avoid updates if nothing would change
+	if reflect.DeepEqual(limitRange.Spec, *spec) {
+		return nil
+	}
 	toUpdate := limitRange.DeepCopy()
 	toUpdate.Spec = *spec
 	logrus.Infof("Updating default limit range for namespace %v", toUpdate.Namespace)
@@ -212,12 +228,12 @@ func (c *SyncController) updateDefaultLimitRange(limitRange *corev1.LimitRange, 
 
 func (c *SyncController) deleteResourceQuota(quota *corev1.ResourceQuota) error {
 	logrus.Infof("Deleting default resource quota for namespace %v", quota.Namespace)
-	return c.ResourceQuotas.DeleteNamespaced(quota.Namespace, quota.Name, &metav1.DeleteOptions{})
+	return c.ResourceQuotas.Delete(quota.Namespace, quota.Name, &metav1.DeleteOptions{})
 }
 
 func (c *SyncController) deleteDefaultLimitRange(limitRange *corev1.LimitRange) error {
 	logrus.Infof("Deleting limit range %v for namespace %v", limitRange.Name, limitRange.Namespace)
-	return c.LimitRange.DeleteNamespaced(limitRange.Namespace, limitRange.Name, &metav1.DeleteOptions{})
+	return c.LimitRange.Delete(limitRange.Namespace, limitRange.Name, &metav1.DeleteOptions{})
 }
 
 func (c *SyncController) getExistingResourceQuota(ns *corev1.Namespace) (*corev1.ResourceQuota, error) {
@@ -256,7 +272,7 @@ func (c *SyncController) deriveRequestedResourceQuota(ns *corev1.Namespace) (*v3
 		return nil, nil, err
 	}
 
-	defaultQuota, err := getProjectNamespaceDefaultQuota(ns, c.ProjectLister)
+	defaultQuota, err := getProjectNamespaceDefaultQuota(ns, c.ProjectCache)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -318,7 +334,7 @@ func (c *SyncController) validateAndSetNamespaceQuota(ns *corev1.Namespace, quot
 	}
 
 	// get project limit
-	projectLimit, projectID, err := getProjectResourceQuotaLimit(ns, c.ProjectLister)
+	projectLimit, projectID, err := getProjectResourceQuotaLimit(ns, c.ProjectCache)
 	if err != nil {
 		return false, ns, nil, err
 	}
@@ -337,9 +353,12 @@ func (c *SyncController) validateAndSetNamespaceQuota(ns *corev1.Namespace, quot
 			return false, ns, nil, err
 		}
 		updatedNs.Annotations[resourceQuotaAnnotation] = string(b)
-		updatedNs, err = c.Namespaces.Update(updatedNs)
-		if err != nil {
-			return false, updatedNs, nil, err
+		// avoid updates if nothing would change
+		if !reflect.DeepEqual(updatedNs, ns) {
+			updatedNs, err = c.Namespaces.Update(updatedNs)
+			if err != nil {
+				return false, updatedNs, nil, err
+			}
 		}
 	}
 
@@ -394,6 +413,10 @@ func (c *SyncController) setValidated(ns *corev1.Namespace, value bool, msg stri
 	if err := namespaceutil.SetNamespaceCondition(toUpdate, time.Second*1, ResourceQuotaValidatedCondition, value, msg); err != nil {
 		return ns, err
 	}
+	// avoid updates if nothing would change
+	if reflect.DeepEqual(toUpdate, ns) {
+		return ns, nil
+	}
 	return c.Namespaces.Update(toUpdate)
 }
 
@@ -402,7 +425,7 @@ func (c *SyncController) getResourceLimitToUpdate(ns *corev1.Namespace) (*corev1
 	if err != nil {
 		return nil, err
 	}
-	projectLimit, err := getProjectContainerDefaultLimit(ns, c.ProjectLister)
+	projectLimit, err := getProjectContainerDefaultLimit(ns, c.ProjectCache)
 	if err != nil {
 		return nil, err
 	}

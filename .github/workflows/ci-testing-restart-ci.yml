@@ -26,7 +26,7 @@ jobs:
             secret/data/github/repo/${{ github.repository }}/github/pr-actions-write-app/credentials privateKey | PRIVATE_KEY
 
       - name: "Create temporary token"
-        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2
+        uses: actions/create-github-app-token@67018539274d69449ef7c02e8e71183d1719ab42 # v2
         id: app-token
         with:
           app-id: ${{ env.APP_ID }}
@@ -118,6 +118,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           INCLUDE_PATTERNS: ${{ steps.pr-settings.outputs.include_patterns }}
           EXCLUDE_PATTERNS: ${{ steps.pr-settings.outputs.exclude_patterns }}
+          MAX_CI_ATTEMPTS: ${{ steps.pr-settings.outputs.max_attempts }}
         run: |
           PR_NUMBER="${{ steps.find-pr.outputs.pr_number }}"
           BRANCH="${{ steps.find-pr.outputs.branch }}"

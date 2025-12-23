@@ -31,22 +31,10 @@ func addKontainerDrivers(management *config.ManagementContext) error {
 		return err
 	}
 
-	if err := creator.add("googleKubernetesEngine"); err != nil {
-		return err
-	}
-
-	if err := creator.add("azureKubernetesService"); err != nil {
-		return err
-	}
-
-	if err := creator.add("amazonElasticContainerService"); err != nil {
-		return err
-	}
-
 	if err := creator.addCustomDriver(
 		"oraclecontainerengine",
-		"https://github.com/rancher-plugins/kontainer-engine-driver-oke/releases/download/v1.8.3/kontainer-engine-driver-oke-linux",
-		"7bfde567e6d478f1da8d36531f765d348bff1cd3abe83c70ddf7766f46112170",
+		"https://github.com/rancher-plugins/kontainer-engine-driver-oke/releases/download/v1.8.8/kontainer-engine-driver-oke-linux",
+		"be98aae12bb4834867dc190aac7078a4caa8236b8ee54bb86215b4f890d83865",
 		"",
 		false,
 		"*.oraclecloud.com",
@@ -76,6 +64,9 @@ func addKontainerDrivers(management *config.ManagementContext) error {
 	}
 
 	creator.deleteRKEKontainerDriver()
+	creator.deleteBuiltInKontainerDriver("amazonelasticcontainerservice")
+	creator.deleteBuiltInKontainerDriver("googlekubernetesengine")
+	creator.deleteBuiltInKontainerDriver("azurekubernetesservice")
 	creator.deleteKontainerDriver("baiducloudcontainerengine", "https://drivers.rancher.cn")
 	creator.deleteKontainerDriver("aliyunkubernetescontainerservice", "https://drivers.rancher.cn")
 	creator.deleteKontainerDriver("tencentkubernetesengine", "https://drivers.rancher.cn")
@@ -198,5 +189,13 @@ func (c *driverCreator) deleteKontainerDriver(name, urlPrefix string) {
 func (c *driverCreator) deleteRKEKontainerDriver() {
 	if err := c.drivers.Delete("rancherKubernetesEngine", &v1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		logrus.Warnf("Error deleting rke kontainer driver : %s", err.Error())
+	}
+}
+
+// deleteBuiltInKontainerDriver deletes the built in kontainer drivers
+// Note: even if the drivers are active they are deleted.
+func (c *driverCreator) deleteBuiltInKontainerDriver(driverName string) {
+	if err := c.drivers.Delete(driverName, &v1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		logrus.Warnf("Error deleting %s kontainer driver : %s", driverName, err.Error())
 	}
 }

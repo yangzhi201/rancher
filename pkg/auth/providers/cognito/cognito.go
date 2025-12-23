@@ -8,7 +8,6 @@ import (
 	"net/url"
 
 	"github.com/rancher/norman/httperror"
-	"github.com/rancher/norman/types"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/accessor"
 	"github.com/rancher/rancher/pkg/auth/providers/common"
@@ -49,14 +48,14 @@ func Configure(ctx context.Context, mgmtCtx *config.ScaledContext, userMGR user.
 }
 
 // GetName returns the name of this provider.
-func (c *CognitoProvider) GetName() string {
+func (p *CognitoProvider) GetName() string {
 	return Name
 }
 
-func (s *CognitoProvider) Logout(apiContext *types.APIContext, token accessor.TokenAccessor) error {
+func (p *CognitoProvider) Logout(w http.ResponseWriter, r *http.Request, token accessor.TokenAccessor) error {
 	providerName := token.GetAuthProvider()
 	logrus.Debugf("CognitoProvider [logout]: triggered by provider %s", providerName)
-	oidcConfig, err := s.GetConfig()
+	oidcConfig, err := p.GetConfig()
 	if err != nil {
 		return fmt.Errorf("getting config for OIDC Logout: %w", err)
 	}
@@ -68,9 +67,9 @@ func (s *CognitoProvider) Logout(apiContext *types.APIContext, token accessor.To
 	return nil
 }
 
-func (s *CognitoProvider) LogoutAll(apiContext *types.APIContext, token accessor.TokenAccessor) error {
+func (p *CognitoProvider) LogoutAll(w http.ResponseWriter, r *http.Request, token accessor.TokenAccessor) error {
 	logrus.Debugf("CognitoProvider [logout-all]: triggered by provider %s", token.GetAuthProvider())
-	oidcConfig, err := s.GetConfig()
+	oidcConfig, err := p.GetConfig()
 	if err != nil {
 		return err
 	}
@@ -81,22 +80,23 @@ func (s *CognitoProvider) LogoutAll(apiContext *types.APIContext, token accessor
 		return fmt.Errorf("CognitoProvider [logout-all]: Rancher provider resource `%v` not configured for SLO", providerName)
 	}
 
-	idpRedirectURL, err := createIDPRedirectURL(apiContext, oidcConfig)
+	idpRedirectURL, err := createIDPRedirectURL(r, oidcConfig)
 	if err != nil {
 		return err
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"idpRedirectUrl": idpRedirectURL,
 		"type":           "authConfigLogoutOutput",
+		"baseType":       "authConfigLogoutOutput",
 	}
-	apiContext.WriteResponse(http.StatusOK, data)
 
-	return nil
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(data)
 }
 
 // Based on https://docs.aws.amazon.com/cognito/latest/developerguide/logout-endpoint.html#get-logout
-func createIDPRedirectURL(apiContext *types.APIContext, config *v3.OIDCConfig) (string, error) {
+func createIDPRedirectURL(r *http.Request, config *v3.OIDCConfig) (string, error) {
 	if config.EndSessionEndpoint == "" {
 		return "", httperror.NewAPIError(httperror.ServerError, "LogoutAll triggered with no endSessionEndpoint")
 	}
@@ -109,7 +109,7 @@ func createIDPRedirectURL(apiContext *types.APIContext, config *v3.OIDCConfig) (
 	}
 
 	authLogout := &v3.AuthConfigLogoutInput{}
-	if err := json.NewDecoder(apiContext.Request.Body).Decode(authLogout); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(authLogout); err != nil {
 		return "", httperror.NewAPIError(httperror.InvalidBodyContent,
 			fmt.Sprintf("CognitoProvider: parsing request body: %s", err))
 	}

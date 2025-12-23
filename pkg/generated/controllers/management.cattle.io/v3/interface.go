@@ -52,6 +52,7 @@ type Interface interface {
 	FleetWorkspace() FleetWorkspaceController
 	FreeIpaProvider() FreeIpaProviderController
 	GenericOIDCProvider() GenericOIDCProviderController
+	GithubAppProvider() GithubAppProviderController
 	GithubProvider() GithubProviderController
 	GlobalRole() GlobalRoleController
 	GlobalRoleBinding() GlobalRoleBindingController
@@ -181,6 +182,10 @@ func (v *version) GenericOIDCProvider() GenericOIDCProviderController {
 	return generic.NewNonNamespacedController[*v3.GenericOIDCProvider, *v3.GenericOIDCProviderList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "GenericOIDCProvider"}, "genericoidcproviders", v.controllerFactory)
 }
 
+func (v *version) GithubAppProvider() GithubAppProviderController {
+	return generic.NewNonNamespacedController[*v3.GithubAppProvider, *v3.GithubAppProviderList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "GithubAppProvider"}, "githubappproviders", v.controllerFactory)
+}
+
 func (v *version) GithubProvider() GithubProviderController {
 	return generic.NewNonNamespacedController[*v3.GithubProvider, *v3.GithubProviderList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "GithubProvider"}, "githubproviders", v.controllerFactory)
 }
@@ -294,7 +299,7 @@ func (v *version) SamlProvider() SamlProviderController {
 }
 
 func (v *version) SamlToken() SamlTokenController {
-	return generic.NewNonNamespacedController[*v3.SamlToken, *v3.SamlTokenList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "SamlToken"}, "samltokens", v.controllerFactory)
+	return generic.NewController[*v3.SamlToken, *v3.SamlTokenList](schema.GroupVersionKind{Group: "management.cattle.io", Version: "v3", Kind: "SamlToken"}, "samltokens", true, v.controllerFactory)
 }
 
 func (v *version) Setting() SettingController {

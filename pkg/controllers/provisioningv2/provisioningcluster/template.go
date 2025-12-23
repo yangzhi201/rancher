@@ -297,9 +297,6 @@ func machineDeployments(cluster *rancherv1.Cluster, capiCluster *capi.Cluster, d
 
 	machinePoolNames := map[string]bool{}
 	for _, machinePool := range cluster.Spec.RKEConfig.MachinePools {
-		if machinePool.Quantity != nil && *machinePool.Quantity == 0 {
-			continue
-		}
 		if machinePool.Name == "" || machinePool.NodeConfig == nil || machinePool.NodeConfig.Name == "" || machinePool.NodeConfig.Kind == "" {
 			return nil, fmt.Errorf("invalid machinePool [%s] missing name or valid config", machinePool.Name)
 		}
@@ -368,12 +365,25 @@ func machineDeployments(cluster *rancherv1.Cluster, capiCluster *capi.Cluster, d
 			return nil, err
 		}
 
+		deployAnnotations := machinePool.MachineDeploymentAnnotations
+		if deployAnnotations == nil {
+			deployAnnotations = make(map[string]string)
+		}
+
+		// potentially gross, hopefully a user doesn't want the max to be 2^16
+		if machinePool.AutoscalingMinSize != nil {
+			deployAnnotations[capi.AutoscalerMinSizeAnnotation] = strconv.Itoa(int(*machinePool.AutoscalingMinSize))
+		}
+		if machinePool.AutoscalingMaxSize != nil {
+			deployAnnotations[capi.AutoscalerMaxSizeAnnotation] = strconv.Itoa(int(*machinePool.AutoscalingMaxSize))
+		}
+
 		machineDeployment := &capi.MachineDeployment{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace:   cluster.Namespace,
 				Name:        machineDeploymentName,
 				Labels:      machineDeploymentLabels,
-				Annotations: machinePool.MachineDeploymentAnnotations,
+				Annotations: deployAnnotations,
 			},
 			Spec: capi.MachineDeploymentSpec{
 				ClusterName: capiCluster.Name,
@@ -567,14 +577,29 @@ func capiCluster(cluster *rancherv1.Cluster, rkeControlPlane *rkev1.RKEControlPl
 		panic(err)
 	}
 
+	// Configure autoscaler annotations for the cluster
+	// If the pause annotation doesn't exist and at least one of the RKEMachinePools has autoscaling enabled
+	// then capr.AutoscalerEnabledAnnotation is rendered in the capi.Cluster annotations
+	// If the pause annotation is present, then it just sets the enabled annotation to `paused` in order
+	// to signify the scale-to-zero behavior on the cluster-autoscaler deployment running in the downstream
+	// cluster.
+	annotations := map[string]string{}
+	if cluster.Annotations[capr.ClusterAutoscalerPausedAnnotation] == "" &&
+		capr.AutoscalerEnabledByProvisioningCluster(cluster) {
+		annotations[capr.ClusterAutoscalerEnabledAnnotation] = "true"
+	} else if cluster.Annotations[capr.ClusterAutoscalerPausedAnnotation] != "" {
+		annotations[capr.ClusterAutoscalerPausedAnnotation] = "true"
+	}
+
 	apiVersion, kind := gvk.ToAPIVersionAndKind()
 
 	ownerGVK := rancherv1.SchemeGroupVersion.WithKind("Cluster")
 	ownerAPIVersion, _ := ownerGVK.ToAPIVersionAndKind()
 	return &capi.Cluster{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cluster.Name,
-			Namespace: cluster.Namespace,
+			Name:        cluster.Name,
+			Namespace:   cluster.Namespace,
+			Annotations: annotations,
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         ownerAPIVersion,

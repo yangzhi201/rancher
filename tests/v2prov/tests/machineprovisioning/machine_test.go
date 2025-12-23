@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	k8swait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	capi "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -77,7 +78,24 @@ func Test_Provisioning_MP_SingleNodeAllRolesWithDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	node, err := clusterClients.Core.Node().Get(machines.Items[0].Status.NodeRef.Name, metav1.GetOptions{})
+	var node *corev1.Node
+	backoff := k8swait.Backoff{
+		Steps:    5,
+		Duration: 2 * time.Second,
+		Factor:   1.0,
+		Jitter:   0.5,
+	}
+	err = retry.OnError(backoff, func(e error) bool {
+		return apierror.IsNotFound(e) || apierror.IsUnauthorized(e)
+	}, func() error {
+		var err error
+		node, err = clusterClients.Core.Node().Get(machines.Items[0].Status.NodeRef.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,19 +733,25 @@ func Test_Provisioning_Single_Node_All_Roles_Drain(t *testing.T) {
 	newCfgRef, err := nodeconfig.NewPodConfig(clients, c.Namespace)
 	require.NoError(t, err)
 
-	gvrPodConfig := schema.GroupVersionResource{
-		Group: "rke-machine-config.cattle.io", Version: "v1", Resource: "podconfigs",
-	}
-	newPodConfig, err := clients.Dynamic.Resource(gvrPodConfig).Namespace(c.Namespace).Get(ctx, newCfgRef.Name, metav1.GetOptions{})
-	require.NoError(t, err)
+	err = retry.OnError(retry.DefaultBackoff, func(err error) bool {
+		return true
+	}, func() error {
+		gvrPodConfig := schema.GroupVersionResource{
+			Group: "rke-machine-config.cattle.io", Version: "v1", Resource: "podconfigs",
+		}
+		newPodConfig, err := clients.Dynamic.Resource(gvrPodConfig).Namespace(c.Namespace).Get(ctx, newCfgRef.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
 
-	currentUserData, ok := unstructuredString(newPodConfig.Object, "userdata")
-	require.True(t, ok)
+		currentUserData, ok := unstructuredString(newPodConfig.Object, "userdata")
+		require.True(t, ok)
+		// Force a no-op template diff
+		newPodConfig.Object["userdata"] = currentUserData + `# Noop Change`
+		_, err = clients.Dynamic.Resource(gvrPodConfig).Namespace(c.Namespace).Update(ctx, newPodConfig, metav1.UpdateOptions{})
+		return err
+	})
 
-	// Force a no-op template diff
-	newPodConfig.Object["userdata"] = currentUserData + `# Noop Change`
-
-	_, err = clients.Dynamic.Resource(gvrPodConfig).Namespace(c.Namespace).Update(ctx, newPodConfig, metav1.UpdateOptions{})
 	require.NoError(t, err)
 
 	provCluster, err := clients.Provisioning.Cluster().Get(c.Namespace, c.Name, metav1.GetOptions{})

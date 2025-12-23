@@ -27,27 +27,31 @@ import (
 )
 
 const (
-	NamespaceID                       = "namespaceId"
-	ProjectID                         = "projectId"
-	ClusterID                         = "clusterId"
-	GlobalAdmin                       = "admin"
-	globalAdminCRBPrefix              = "globaladmin-"
-	GlobalRestrictedAdmin             = "restricted-admin"
-	ClusterCRDsClusterRole            = "cluster-crd-clusterRole"
-	RestrictedAdminClusterRoleBinding = "restricted-admin-rb-cluster"
-	ProjectCRDsClusterRole            = "project-crd-clusterRole"
-	RestrictedAdminProjectRoleBinding = "restricted-admin-rb-project"
-	RestrictedAdminCRForClusters      = "restricted-admin-cr-clusters"
-	RestrictedAdminCRBForClusters     = "restricted-admin-crb-clusters"
-	CrtbOwnerLabel                    = "authz.cluster.cattle.io/crtb-owner"
-	PrtbOwnerLabel                    = "authz.cluster.cattle.io/prtb-owner"
-	AggregationLabel                  = "management.cattle.io/aggregates"
-	ClusterRoleOwnerLabel             = "authz.cluster.cattle.io/clusterrole-owner"
-	aggregatorSuffix                  = "aggregator"
-	promotedSuffix                    = "promoted"
-	namespaceSuffix                   = "namespaces"
-	clusterManagementPlaneSuffix      = "cluster-mgmt"
-	projectManagementPlaneSuffix      = "project-mgmt"
+	NamespaceID                         = "namespaceId"
+	ProjectID                           = "projectId"
+	ClusterID                           = "clusterId"
+	GlobalAdmin                         = "admin"
+	GlobalAdminCRBPrefix                = "globaladmin-"
+	GlobalRestrictedAdmin               = "restricted-admin"
+	ClusterCRDsClusterRole              = "cluster-crd-clusterRole"
+	RestrictedAdminClusterRoleBinding   = "restricted-admin-rb-cluster"
+	ProjectCRDsClusterRole              = "project-crd-clusterRole"
+	RestrictedAdminProjectRoleBinding   = "restricted-admin-rb-project"
+	RestrictedAdminCRForClusters        = "restricted-admin-cr-clusters"
+	RestrictedAdminCRBForClusters       = "restricted-admin-crb-clusters"
+	CrtbOwnerLabel                      = "authz.cluster.cattle.io/crtb-owner"
+	PrtbOwnerLabel                      = "authz.cluster.cattle.io/prtb-owner"
+	AggregationLabel                    = "management.cattle.io/aggregates"
+	ClusterRoleOwnerLabel               = "authz.cluster.cattle.io/clusterrole-owner"
+	aggregatorSuffix                    = "aggregator"
+	promotedSuffix                      = "promoted"
+	namespaceSuffix                     = "namespaces"
+	clusterManagementPlaneSuffix        = "cluster-mgmt"
+	projectManagementPlaneSuffix        = "project-mgmt"
+	ClusterAdminRoleName                = "cluster-admin"
+	CrbGlobalRoleAnnotation             = "authz.cluster.cattle.io/globalrole"
+	CrbGlobalRoleBindingAnnotation      = "authz.cluster.cattle.io/globalrolebinding"
+	CrbAdminGlobalRoleCheckedAnnotation = "authz.cluster.cattle.io/admin-globalrole-checked"
 )
 
 // BuildSubjectFromRTB This function will generate
@@ -124,7 +128,7 @@ func BuildSubjectFromRTB(object metav1.Object) (rbacv1.Subject, error) {
 }
 
 func GrbCRBName(grb *v3.GlobalRoleBinding) string {
-	return globalAdminCRBPrefix + GetGRBTargetKey(grb)
+	return GlobalAdminCRBPrefix + GetGRBTargetKey(grb)
 }
 
 // GetGRBSubject creates and returns a subject that is
@@ -385,23 +389,25 @@ func CreateOrUpdateResource[T generic.RuntimeMetaObject, TList runtime.Object](o
 //   - client is the Wrangler client to use to get/create/update resource.
 //   - areResourcesTheSame is a func that compares two resources and returns (true, nil) if they are equal, and (false, T) when not the same.
 //     T is an updated version of the resource.
-func CreateOrUpdateNamespacedResource[T generic.RuntimeMetaObject, TList runtime.Object](obj T, client generic.ClientInterface[T, TList], areResourcesTheSame func(T, T) (bool, T)) (T, error) {
+func CreateOrUpdateNamespacedResource[T generic.RuntimeMetaObject, TList runtime.Object](obj T, client generic.ClientInterface[T, TList], areResourcesTheSame func(T, T) (bool, T)) error {
 	resource, err := client.Get(obj.GetNamespace(), obj.GetName(), metav1.GetOptions{})
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
-			return obj, err
+			return err
 		}
 		// resource doesn't exist, create it
 		logrus.Infof("%T %s being created in namespace %s", obj, obj.GetName(), obj.GetNamespace())
-		return client.Create(obj)
+		_, err := client.Create(obj)
+		return err
 	}
 
 	if same, updatedResource := areResourcesTheSame(resource, obj); !same {
 		logrus.Infof("%T %s in namespace %s needs to be updated", obj, obj.GetName(), obj.GetNamespace())
-		return client.Update(updatedResource)
+		_, err := client.Update(updatedResource)
+		return err
 
 	}
-	return obj, nil
+	return nil
 }
 
 // AreClusterRolesSame returns true if the current ClusterRole has the same fields present in the desired ClusterRole.
@@ -447,6 +453,16 @@ func AreClusterRolesSame(currentCR, wantedCR *rbacv1.ClusterRole) (bool, *rbacv1
 // DeleteResource deletes a non namespaced resource
 func DeleteResource[T generic.RuntimeMetaObject, TList runtime.Object](name string, client generic.NonNamespacedClientInterface[T, TList]) error {
 	err := client.Delete(name, &metav1.DeleteOptions{})
+	// If the resource is already gone, don't treat it as an error
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// DeleteResource deletes a non namespaced resource
+func DeleteNamespacedResource[T generic.RuntimeMetaObject, TList runtime.Object](namespace, name string, client generic.ClientInterface[T, TList]) error {
+	err := client.Delete(namespace, name, &metav1.DeleteOptions{})
 	// If the resource is already gone, don't treat it as an error
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -506,6 +522,45 @@ func BuildAggregatingClusterRole(rt *v3.RoleTemplate, nameTransformer func(strin
 	}
 }
 
+// BuildAggregatingRoleBindingFromRTB returns a RoleBinding for a RTB. It is bound to the Aggregating ClusterRole.
+func BuildAggregatingRoleBindingFromRTB(rtb metav1.Object, roleRefName string) (*rbacv1.RoleBinding, error) {
+	return BuildRoleBindingFromRTB(rtb, AggregatedClusterRoleNameFor(roleRefName))
+}
+
+// BuildRoleBindingFromRTB returns a RoleBinding for a RTB. It is bound to the ClusterRole specified by roleRefName.
+func BuildRoleBindingFromRTB(rtb metav1.Object, roleRefName string) (*rbacv1.RoleBinding, error) {
+	roleRef := rbacv1.RoleRef{
+		APIGroup: rbacv1.GroupName,
+		Kind:     "ClusterRole",
+		Name:     roleRefName,
+	}
+
+	subject, err := BuildSubjectFromRTB(rtb)
+	if err != nil {
+		return nil, err
+	}
+
+	var ownerLabel string
+	switch rtb.(type) {
+	case *v3.ProjectRoleTemplateBinding:
+		ownerLabel = GetPRTBOwnerLabel(rtb.GetName())
+	case *v3.ClusterRoleTemplateBinding:
+		ownerLabel = GetCRTBOwnerLabel(rtb.GetName())
+	default:
+		return nil, fmt.Errorf("unrecognized roleTemplateBinding type: %T", rtb)
+	}
+
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      NameForRoleBinding(rtb.GetNamespace(), roleRef, subject),
+			Namespace: rtb.GetNamespace(),
+			Labels:    map[string]string{ownerLabel: "true"},
+		},
+		RoleRef:  roleRef,
+		Subjects: []rbacv1.Subject{subject},
+	}, nil
+}
+
 // BuildAggregatingClusterRoleBindingFromRTB returns the ClusterRoleBinding needed for a RTB. It is bound to the Aggregating ClusterRole.
 func BuildAggregatingClusterRoleBindingFromRTB(rtb metav1.Object, roleRefName string) (*rbacv1.ClusterRoleBinding, error) {
 	return BuildClusterRoleBindingFromRTB(rtb, AggregatedClusterRoleNameFor(roleRefName))
@@ -551,9 +606,9 @@ func AreClusterRoleBindingContentsSame(crb1, crb2 *rbacv1.ClusterRoleBinding) bo
 }
 
 // AreRoleBindingsSame compares the Subjects and RoleRef fields of two Cluster Role Bindings.
-func AreRoleBindingContentsSame(rb1, rb2 *rbacv1.RoleBinding) bool {
+func AreRoleBindingContentsSame(rb1, rb2 *rbacv1.RoleBinding) (bool, *rbacv1.RoleBinding) {
 	return equality.Semantic.DeepEqual(rb1.Subjects, rb2.Subjects) &&
-		equality.Semantic.DeepEqual(rb1.RoleRef, rb2.RoleRef)
+		equality.Semantic.DeepEqual(rb1.RoleRef, rb2.RoleRef), rb2
 }
 
 // ClusterRoleNameFor returns safe version of a string to be used for a clusterRoleName

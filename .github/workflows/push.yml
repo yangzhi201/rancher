@@ -27,7 +27,7 @@ jobs:
       OS: ${{ matrix.os }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4
+        uses: actions/checkout@v4
       - name: setup and build
         uses: ./.github/actions/build-images/server
   build-agent:
@@ -86,6 +86,7 @@ jobs:
       cancel-in-progress: false
     env:
       ARCH: amd64
+      REGISTRY: "" # remove to set the registry at systemDefaultRegistry on the chart
     steps:
       - name: install dependencies
         shell: bash
@@ -148,7 +149,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
       - name: Login to Docker Registry
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3
         with:
           username: ${{ env.DOCKER_USERNAME }}
           password: ${{ env.DOCKER_PASSWORD }}

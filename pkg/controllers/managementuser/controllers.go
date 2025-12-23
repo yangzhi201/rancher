@@ -26,7 +26,6 @@ import (
 	"github.com/rancher/rancher/pkg/impersonation"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/rancher/rancher/pkg/wrangler"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func Register(ctx context.Context, mgmt *config.ScaledContext, cluster *config.UserContext, clusterRec *apimgmtv3.Cluster, kubeConfigGetter common.KubeConfigGetter) error {
@@ -41,15 +40,35 @@ func Register(ctx context.Context, mgmt *config.ScaledContext, cluster *config.U
 	windows.Register(ctx, clusterRec, cluster)
 	nsserviceaccount.Register(ctx, cluster)
 
+	// For the local cluster, register nodesyncer immediately without waiting for CAPI.
+	// The nodesyncer can work without CAPI for the local cluster since
+	// isClusterRestoring() is skipped for local clusters (see nodessyncer.go:reconcileAll).
+	// For other clusters, we still need to wait for CAPI to be ready because
+	// registerProvV2 requires CAPI resources.
+	if cluster.ClusterName == "local" {
+		_ = cluster.DeferredStart(ctx, func(ctx context.Context) error {
+			nodesyncer.Register(ctx, cluster, nil, kubeConfigGetter)
+			return nil
+		})()
+	}
+
 	mgmt.Wrangler.DeferredCAPIRegistration.DeferFunc(func(capi *wrangler.CAPIContext) {
 		_ = cluster.DeferredStart(ctx, func(ctx context.Context) error {
-			nodesyncer.Register(ctx, cluster, capi, kubeConfigGetter)
+			// For non-local clusters, register nodesyncer with CAPI context
+			if cluster.ClusterName != "local" {
+				nodesyncer.Register(ctx, cluster, capi, kubeConfigGetter)
+			}
 			registerProvV2(ctx, cluster, capi, clusterRec)
 			return nil
 		})()
 	})
 
-	registerImpersonationCaches(cluster)
+	registerCaches(cluster)
+
+	// early request an impersonator for initializing it
+	if _, err := impersonation.ForCluster(cluster); err != nil {
+		return fmt.Errorf("unable to create impersonator for cluster %q: %w", cluster.ClusterName, err)
+	}
 
 	if err := cavalidator.Register(ctx, cluster); err != nil {
 		return err
@@ -59,7 +78,7 @@ func Register(ctx context.Context, mgmt *config.ScaledContext, cluster *config.U
 	cluster.APIAggregation.APIServices("").Controller()
 
 	if clusterRec.Spec.LocalClusterAuthEndpoint.Enabled {
-		err := clusterauthtoken.CRDSetup(ctx, cluster.UserOnlyContext())
+		err := clusterauthtoken.CRDSetup(ctx, cluster.RESTConfig, cluster.Management.Schemas)
 		if err != nil {
 			return err
 		}
@@ -92,28 +111,22 @@ func registerProvV2(ctx context.Context, cluster *config.UserContext, capi *wran
 }
 
 func RegisterFollower(cluster *config.UserContext) error {
-	registerImpersonationCaches(cluster)
+	registerCaches(cluster)
+
+	// early request an impersonator for initializing it
+	if _, err := impersonation.ForCluster(cluster); err != nil {
+		return fmt.Errorf("unable to create impersonator for cluster %q: %w", cluster.ClusterName, err)
+	}
+	return nil
+}
+
+// registerCaches initializes caches early in the initialization process to have them available as soon as possible (instead of on demand when Lister/Cache or Controller are called)
+func registerCaches(cluster *config.UserContext) {
+	cluster.Corew.Namespace().Informer()
 	cluster.RBACw.ClusterRoleBinding().Informer()
 	cluster.RBACw.ClusterRole().Informer()
 	cluster.RBACw.RoleBinding().Informer()
 	cluster.RBACw.Role().Informer()
-	return nil
-}
-
-// registerImpersonationCaches configures the context to only cache impersonation-related secrets and service accounts
-// it then ensures all the necessary caches are started.
-func registerImpersonationCaches(cluster *config.UserContext) {
-	cluster.KindNamespaces[schema.GroupVersionKind{
-		Version: "v1",
-		Kind:    "Secret",
-	}] = impersonation.ImpersonationNamespace
-	cluster.KindNamespaces[schema.GroupVersionKind{
-		Version: "v1",
-		Kind:    "ServiceAccount",
-	}] = impersonation.ImpersonationNamespace
-	cluster.Core.Secrets("").Controller()
-	cluster.Core.ServiceAccounts("").Controller()
-	cluster.Core.Namespaces("").Controller()
 }
 
 // PreBootstrap is a list of functions that _need_ to be run before the rest of the controllers start

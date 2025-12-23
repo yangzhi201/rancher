@@ -28,6 +28,7 @@ import (
 )
 
 const (
+	userSecretAnnotation     = "secret.user.cattle.io/secret"
 	namespaceChangeHandler   = "project-scoped-secret-namespace-handler"
 	namespaceEnqueuerName    = "project-scoped-secret-namespace-enqueuer"
 	projectIDLabel           = "field.cattle.io/projectId"
@@ -94,8 +95,8 @@ func (n *namespaceHandler) OnChange(_ string, namespace *corev1.Namespace) (*cor
 	for _, secret := range secrets {
 		secretCopy := getNamespacedSecret(secret, namespace.Name)
 
-		s, err := rbac.CreateOrUpdateNamespacedResource(secretCopy, n.secretClient, areSecretsSame)
-		desiredSecrets.Insert(client.ObjectKeyFromObject(s))
+		err := rbac.CreateOrUpdateNamespacedResource(secretCopy, n.secretClient, areSecretsSame)
+		desiredSecrets.Insert(client.ObjectKeyFromObject(secretCopy))
 		errs = errors.Join(errs, err)
 	}
 	if errs != nil {
@@ -198,7 +199,12 @@ func (n *namespaceHandler) getProjectFromNamespace(namespace *corev1.Namespace) 
 		return nil, nil
 	}
 
-	return n.projectCache.Get(clusterName, projectName)
+	project, err := n.projectCache.Get(clusterName, projectName)
+	if apierrors.IsNotFound(err) {
+		logrus.Warnf("Namespace %s references project %s:%s which does not exist. Not re-enqueueing", namespace.Name, clusterName, projectName)
+		return nil, nil
+	}
+	return project, err
 }
 
 // secretEnqueueNamespace enqueues all the project namespaces of a project scoped secret.

@@ -16,16 +16,11 @@ const (
 	cloudCredentialSchemaID  = "cloudCredential"
 )
 
-// operator names
-const (
-	alibabaOperator = "alibaba"
-)
-
 type CredentialFields map[string]v32.Field
 
 // Credential Fields data for KEv2 Operators which don't have a corresponding node driver.
 var KEv2OperatorsCredentialFields = map[string]CredentialFields{
-	alibabaOperator: {
+	AlibabaOperator: {
 		"accessKeyId": v32.Field{
 			Create: true,
 			Update: true,
@@ -97,8 +92,8 @@ func credentialConfigSchemaName(operatorName string) string {
 	return fmt.Sprintf("%s%s", operatorName, "credentialconfig")
 }
 
-func (m *KEv2CredsSchemaHandler) addEmbeddedCredentialConfigField(embeddedType, fieldName string) error {
-	nodeSchema, err := m.schemaLister.Get("", credentialConfigSchemaID)
+func (csh *KEv2CredsSchemaHandler) addEmbeddedCredentialConfigField(embeddedType, fieldName string) error {
+	nodeSchema, err := csh.schemaLister.Get("", credentialConfigSchemaID)
 	if err != nil && !errors.IsNotFound(err) {
 		return err
 	} else if errors.IsNotFound(err) {
@@ -117,7 +112,7 @@ func (m *KEv2CredsSchemaHandler) addEmbeddedCredentialConfigField(embeddedType, 
 		dynamicSchema.Spec.ResourceFields = resourceField
 		dynamicSchema.Spec.Embed = true
 		dynamicSchema.Spec.EmbedType = cloudCredentialSchemaID
-		_, err := m.schemaClient.Create(dynamicSchema)
+		_, err := csh.schemaClient.Create(dynamicSchema)
 		if err != nil {
 			return err
 		}
@@ -139,7 +134,7 @@ func (m *KEv2CredsSchemaHandler) addEmbeddedCredentialConfigField(embeddedType, 
 			Type:     embeddedType,
 		}
 
-		_, err = m.schemaClient.Update(nodeSchema)
+		_, err = csh.schemaClient.Update(nodeSchema)
 		if err != nil {
 			return err
 		}

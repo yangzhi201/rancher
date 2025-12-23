@@ -3,6 +3,7 @@ package roletemplates
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -67,13 +68,13 @@ func (p *prtbHandler) OnRemove(_ string, prtb *v3.ProjectRoleTemplateBinding) (*
 		deleteProjectMembershipBinding(prtb, p.rbController),
 		removeAuthV2Permissions(prtb, p.rbController))
 
-	currentCRBs, err := p.crbController.List(metav1.ListOptions{LabelSelector: rbac.GetPRTBOwnerLabel(prtb.Name)})
+	currentRBs, err := p.rbController.List(prtb.Namespace, metav1.ListOptions{LabelSelector: rbac.GetPRTBOwnerLabel(prtb.Name)})
 	if err != nil {
 		return nil, errors.Join(returnErr, err)
 	}
 
-	for _, crb := range currentCRBs.Items {
-		returnErr = errors.Join(returnErr, rbac.DeleteResource(crb.Name, p.crbController))
+	for _, rb := range currentRBs.Items {
+		returnErr = errors.Join(returnErr, rbac.DeleteNamespacedResource(rb.Namespace, rb.Name, p.rbController))
 	}
 
 	return prtb, returnErr
@@ -115,25 +116,38 @@ func (p *prtbHandler) reconcileSubject(binding *v3.ProjectRoleTemplateBinding) (
 	return binding, nil
 }
 
+// isInheritedOwner checks if a PolicyRule contains the "own" verb for the given resource. That indicates whether the user should be given owner level access via membership bindings.
+func isInheritedOwner(rule rbacv1.PolicyRule, resource string) bool {
+	return slices.Contains(rule.Verbs, "own") && slices.Contains(rule.Resources, resource)
+}
+
 // reconcileMembershipBindings ensures that the user is given the right membership binding to the project and cluster.
 func (p *prtbHandler) reconcileMembershipBindings(prtb *v3.ProjectRoleTemplateBinding) error {
-	rt, err := p.rtController.Get(prtb.RoleTemplateName, metav1.GetOptions{})
+	// to determine if a user is a member or an owner, we need to check the aggregated cluster role to see if it inherited the "own" verb on projects/clusters
+	clusterRole, err := p.crController.Get(rbac.AggregatedClusterRoleNameFor(prtb.RoleTemplateName), metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
+	isProjectOwner, isClusterOwner := false, false
+	for _, rule := range clusterRole.Rules {
+		if isInheritedOwner(rule, "projects") {
+			isProjectOwner = true
+		}
+		if isInheritedOwner(rule, "clusters") {
+			isClusterOwner = true
+		}
+	}
 
-	return errors.Join(createOrUpdateClusterMembershipBinding(prtb, rt, p.crbController),
-		createOrUpdateProjectMembershipBinding(prtb, rt, p.rbController))
+	return errors.Join(createOrUpdateClusterMembershipBinding(prtb, p.crbController, isClusterOwner),
+		createOrUpdateProjectMembershipBinding(prtb, p.rbController, isProjectOwner))
 }
 
-// reconcileBindings ensures the right CRB exists for the project management plane role. It deletes any additional unwanted CRBs.
+// reconcileBindings ensures the right Role Binding exists for the project management plane role. It deletes any additional unwanted Role Bindings.
 func (p *prtbHandler) reconcileBindings(prtb *v3.ProjectRoleTemplateBinding) error {
-	var crb *rbacv1.ClusterRoleBinding
-
 	projectManagementRoleName := rbac.ProjectManagementPlaneClusterRoleNameFor(prtb.RoleTemplateName)
 
 	// If there is no project management plane role, no need to create a binding for it
-	_, err := p.crController.Get(projectManagementRoleName, metav1.GetOptions{})
+	_, err := p.crController.Get(rbac.AggregatedClusterRoleNameFor(projectManagementRoleName), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
@@ -141,29 +155,29 @@ func (p *prtbHandler) reconcileBindings(prtb *v3.ProjectRoleTemplateBinding) err
 		return err
 	}
 
-	crb, err = rbac.BuildAggregatingClusterRoleBindingFromRTB(prtb, projectManagementRoleName)
+	rb, err := rbac.BuildAggregatingRoleBindingFromRTB(prtb, projectManagementRoleName)
 	if err != nil {
 		return err
 	}
 
-	currentCRBs, err := p.crbController.List(metav1.ListOptions{LabelSelector: rbac.GetPRTBOwnerLabel(prtb.Name)})
+	currentRBs, err := p.rbController.List(prtb.Namespace, metav1.ListOptions{LabelSelector: rbac.GetPRTBOwnerLabel(prtb.Name)})
 	if err != nil {
 		return err
 	}
 
 	var prtbHasBinding bool
-	for _, currentCRB := range currentCRBs.Items {
-		if rbac.AreClusterRoleBindingContentsSame(&currentCRB, crb) {
+	for _, currentRB := range currentRBs.Items {
+		if ok, _ := rbac.AreRoleBindingContentsSame(&currentRB, rb); ok {
 			prtbHasBinding = true
 			continue
 		}
-		if err := rbac.DeleteResource(currentCRB.Name, p.crbController); err != nil {
+		if err := rbac.DeleteNamespacedResource(currentRB.Namespace, currentRB.Name, p.rbController); err != nil {
 			return err
 		}
 	}
 
 	if !prtbHasBinding {
-		if _, err := p.crbController.Create(crb); err != nil {
+		if err := rbac.CreateOrUpdateNamespacedResource(rb, p.rbController, rbac.AreRoleBindingContentsSame); err != nil {
 			return err
 		}
 	}

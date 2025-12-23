@@ -8,6 +8,7 @@ import (
 	"github.com/rancher/rancher/pkg/rbac"
 	crbacv1 "github.com/rancher/wrangler/v3/pkg/generated/controllers/rbac/v1"
 	"github.com/rancher/wrangler/v3/pkg/name"
+	"github.com/sirupsen/logrus"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,31 +24,31 @@ const (
 const (
 	// Statuses
 	clusterRoleTemplateBindingDelete = "ClusterRoleTemplateBindingDelete"
-	removeClusterRoleBindings        = "RemoveClusterRoleBindings"
+	removeRoleBindings               = "RemoveRoleBindings"
 	reconcileSubject                 = "ReconcileSubject"
 	reconcileMembershipBindings      = "ReconcileMembershipBindings"
 	reconcileBindings                = "ReconcileBindings"
 	// Reasons
-	clusterRoleBindingDeleted               = "ClusterRoleBindingDeleted"
+	roleBindingDeleted                      = "roleBindingDeleted"
 	bindingsExists                          = "BindingsExists"
 	membershipBindingExists                 = "MembershipBindingExists"
 	subjectExists                           = "SubjectExists"
 	crtbHasNoSubject                        = "CRTBHasNoSubject"
 	clusterMembershipBindingDeleted         = "ClusterMembershipBindingDeleted"
 	authv2ProvisioningBindingDeleted        = "AuthV2ProvisioningBindingDeleted"
-	failedToCreateClusterRoleBinding        = "FailedToCreateClusterRoleBinding"
+	failedToCreateRoleBinding               = "FailedToCreateRoleBinding"
 	failedToCreateOrUpdateMembershipBinding = "FailedToCreateOrUpdateMembershipBinding"
 	failedToCreateUser                      = "FailedToCreateUser"
-	failedToDeleteClusterRoleBinding        = "FailedToDeleteClusterRoleBinding"
-	failedToGetDesiredClusterRoleBindings   = "FailedToGetDesiredClusterRoleBindings"
-	failedToGetRoleTemplate                 = "FailedToGetRoleTemplate"
+	failedToDeleteRoleBinding               = "FailedToDeleteRoleBinding"
+	failedToGetDesiredRoleBindings          = "FailedToGetDesiredRoleBindings"
 	failedToGetUser                         = "FailedToGetUser"
-	failedToListExistingClusterRoleBindings = "FailedToGetExistingClusterRoleBindings"
+	failedToGetClusterRole                  = "FailedToGetClusterRole"
+	failedToListExistingRoleBindings        = "FailedToGetExistingRoleBindings"
 )
 
 // createOrUpdateClusterMembershipBinding ensures that the user specified by a CRTB or PRTB has membership to the cluster referenced by the CRTB or PRTB.
-func createOrUpdateClusterMembershipBinding(rtb metav1.Object, rt *v3.RoleTemplate, crbController crbacv1.ClusterRoleBindingController) error {
-	roleName := getClusterMembershipRoleName(rt, rtb)
+func createOrUpdateClusterMembershipBinding(rtb metav1.Object, crbController crbacv1.ClusterRoleBindingController, isClusterOwner bool) error {
+	roleName := getClusterMembershipRoleName(rtb, isClusterOwner)
 	roleRef := rbacv1.RoleRef{
 		APIGroup: rbacv1.GroupName,
 		Kind:     "ClusterRole",
@@ -62,6 +63,7 @@ func createOrUpdateClusterMembershipBinding(rtb metav1.Object, rt *v3.RoleTempla
 	existingCRB, err := crbController.Get(wantedCRB.Name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			logrus.Infof("Creating clusterRoleBinding %s for cluster membership role %s for subjects %v", wantedCRB.Name, wantedCRB.RoleRef.Name, wantedCRB.Subjects)
 			_, err := crbController.Create(wantedCRB)
 			return err
 		}
@@ -70,6 +72,7 @@ func createOrUpdateClusterMembershipBinding(rtb metav1.Object, rt *v3.RoleTempla
 
 	// If the role referenced or subjects are wrong, delete and re-create the CRB
 	if !rbac.AreClusterRoleBindingContentsSame(wantedCRB, existingCRB) {
+		logrus.Infof("Re-creating clusterRoleBinding %s for cluster membership role %s for subjects %v", wantedCRB.Name, wantedCRB.RoleRef.Name, wantedCRB.Subjects)
 		if err := crbController.Delete(wantedCRB.Name, &metav1.DeleteOptions{}); err != nil {
 			return err
 		}
@@ -79,6 +82,7 @@ func createOrUpdateClusterMembershipBinding(rtb metav1.Object, rt *v3.RoleTempla
 	// Update Label
 	rtbLabel := getRTBLabel(rtb)
 	if v, ok := existingCRB.Labels[rtbLabel]; !ok || v != "true" {
+		logrus.Infof("Updating clusterRoleBinding %s for cluster membership role %s for subjects %v", wantedCRB.Name, wantedCRB.RoleRef.Name, wantedCRB.Subjects)
 		existingCRB.Labels[rtbLabel] = "true"
 		_, err := crbController.Update(existingCRB)
 		return err
@@ -136,7 +140,7 @@ func deleteClusterMembershipBinding(rtb metav1.Object, crbController crbacv1.Clu
 }
 
 // getMembershipRoleName returns the name of the membership role based on the RoleTemplate.
-func getClusterMembershipRoleName(rt *v3.RoleTemplate, rtb metav1.Object) string {
+func getClusterMembershipRoleName(rtb metav1.Object, isClusterOwner bool) string {
 	var clusterName string
 	switch obj := rtb.(type) {
 	case *v3.ProjectRoleTemplateBinding:
@@ -144,19 +148,18 @@ func getClusterMembershipRoleName(rt *v3.RoleTemplate, rtb metav1.Object) string
 	case *v3.ClusterRoleTemplateBinding:
 		clusterName = obj.ClusterName
 	}
-	if isClusterOwnerRole(rt) {
-		return name.SafeConcatName(clusterName, clusterContext, "owner")
-	} else {
-		return name.SafeConcatName(clusterName, clusterContext, "member")
+	if isClusterOwner {
+		return name.SafeConcatName(clusterName, clusterContext+"owner")
 	}
+	return name.SafeConcatName(clusterName, clusterContext+"member")
 }
 
 // createOrUpdateProjectMembershipBinding ensures the RoleBinding required to give Project access to a user exists.
-func createOrUpdateProjectMembershipBinding(prtb *v3.ProjectRoleTemplateBinding, rt *v3.RoleTemplate, rbController crbacv1.RoleBindingController) error {
-	roleName := getProjectMembershipRoleName(rt, prtb)
+func createOrUpdateProjectMembershipBinding(prtb *v3.ProjectRoleTemplateBinding, rbController crbacv1.RoleBindingController, isProjectOwner bool) error {
+	roleName := getProjectMembershipRoleName(prtb, isProjectOwner)
 	roleRef := rbacv1.RoleRef{
 		APIGroup: rbacv1.GroupName,
-		Kind:     "ClusterRole",
+		Kind:     "Role",
 		Name:     roleName,
 	}
 
@@ -168,13 +171,16 @@ func createOrUpdateProjectMembershipBinding(prtb *v3.ProjectRoleTemplateBinding,
 	existingRB, err := rbController.Get(wantedRB.Namespace, wantedRB.Name, metav1.GetOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			logrus.Infof("Creating roleBinding %s for project membership role %s for subjects %v", wantedRB.Name, wantedRB.RoleRef.Name, wantedRB.Subjects)
 			_, err := rbController.Create(wantedRB)
 			return err
 		}
 		return err
 	}
 
-	if !rbac.AreRoleBindingContentsSame(wantedRB, existingRB) {
+	// RoleRef is immutable, so if it's incorrect it needs to be deleted and re-created
+	if ok, _ := rbac.AreRoleBindingContentsSame(wantedRB, existingRB); !ok {
+		logrus.Infof("Re-creating roleBinding %s for project membership role %s for subjects %v", wantedRB.Name, wantedRB.RoleRef.Name, wantedRB.Subjects)
 		if err := rbController.Delete(wantedRB.Namespace, wantedRB.Name, &metav1.DeleteOptions{}); err != nil {
 			return err
 		}
@@ -185,6 +191,7 @@ func createOrUpdateProjectMembershipBinding(prtb *v3.ProjectRoleTemplateBinding,
 	// Update label
 	rtbLabel := getRTBLabel(prtb)
 	if v, ok := existingRB.Labels[rtbLabel]; !ok || v != "true" {
+		logrus.Infof("Updating roleBinding %s for project membership role %s for subjects %v", wantedRB.Name, wantedRB.RoleRef.Name, wantedRB.Subjects)
 		existingRB.Labels[rtbLabel] = "true"
 		_, err := rbController.Update(existingRB)
 		return err
@@ -246,25 +253,12 @@ func deleteProjectMembershipBinding(prtb *v3.ProjectRoleTemplateBinding, rbContr
 }
 
 // getProjectMembershipRoleName returns the name of the project member or owner binding for the PRTB.
-func getProjectMembershipRoleName(rt *v3.RoleTemplate, prtb *v3.ProjectRoleTemplateBinding) string {
+func getProjectMembershipRoleName(prtb *v3.ProjectRoleTemplateBinding, isProjectOwner bool) string {
 	_, projectName := rbac.GetClusterAndProjectNameFromPRTB(prtb)
-	if isProjectOwnerRole(rt) {
-		return name.SafeConcatName(projectName, projectContext, "owner")
-	} else {
-		return name.SafeConcatName(projectName, projectContext, "member")
+	if isProjectOwner {
+		return name.SafeConcatName(projectName, projectContext+"owner")
 	}
-}
-
-// isClusterOwnerRole returns if the RoleTemplate is an Owner role. If not it is considered a Member role.
-// The only valid OwnerRole is the builtin "cluster-owner" role.
-func isClusterOwnerRole(rt *v3.RoleTemplate) bool {
-	return rt.Builtin && rt.Context == clusterContext && rt.Name == clusterOwner
-}
-
-// isProjectOwnerRole returns if the RoleTemplate is an Owner role. If not it is considered a Member role.
-// The only valid OwnerRole is the builtin "project-owner" role.
-func isProjectOwnerRole(rt *v3.RoleTemplate) bool {
-	return rt.Builtin && rt.Context == projectContext && rt.Name == projectOwner
+	return name.SafeConcatName(projectName, projectContext+"member")
 }
 
 // getRTBLabel returns the label to be used to indicate what PRTB/CRTB make use of a membership role.

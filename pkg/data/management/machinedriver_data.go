@@ -74,6 +74,7 @@ var DriverData = map[string]DriverDataConfig{
 	},
 	ExoscaleDriver: {
 		FileToFieldAliases:      map[string]string{"sshKey": "sshKey", "userdata": "userdata"},
+		PublicCredentialFields:  []string{"apiKey"},
 		PrivateCredentialFields: []string{"apiSecretKey"},
 	},
 	HarvesterDriver: {
@@ -217,7 +218,7 @@ func addMachineDrivers(management *config.ManagementContext) error {
 	if err := addMachineDriver(SoftLayerDriver, "local://", "", "", nil, false, true, false, nil, management); err != nil {
 		return err
 	}
-	if err := addMachineDriver(NutanixDriver, "https://github.com/nutanix/docker-machine/releases/download/v3.7.0/docker-machine-driver-nutanix", "https://nutanix.github.io/rancher-ui-driver/v3.7.0/component.js", "2f70c4bdccd3c5e68bd8c32aadb5b525275a3cda5799f29736f37bdd168caa94", []string{"nutanix.github.io"}, false, false, false, nil, management); err != nil {
+	if err := addMachineDriver(NutanixDriver, "https://github.com/nutanix/docker-machine/releases/download/v3.8.0/docker-machine-driver-nutanix", "https://nutanix.github.io/rancher-ui-driver/v3.8.0/component.js", "ad18a0150f37e6cf0aef99a529f9541be72daa9e6dc3dad835d095d44e600f6a", []string{"nutanix.github.io"}, false, false, false, nil, management); err != nil {
 		return err
 	}
 	if err := addMachineDriver(OutscaleDriver, "https://github.com/outscale/docker-machine-driver-outscale/releases/download/v0.2.0/docker-machine-driver-outscale_0.2.0_linux_amd64.zip", "https://oos.eu-west-2.outscale.com/rancher-ui-driver-outscale/v0.2.0/component.js", "bb539ed4e2b0f1a1083b29cbdbab59bde3efed0a3145fefc0b2f47026c48bfe0", []string{"oos.eu-west-2.outscale.com"}, false, false, false, nil, management); err != nil {
@@ -235,10 +236,10 @@ func addMachineDrivers(management *config.ManagementContext) error {
 
 func AddHarvesterMachineDriver(mgmt *config.ManagementContext) error {
 	// make sure the version number is consistent with the one at Line 40 of package/Dockerfile
-	harvesterDriverVersion := "v1.0.3"
+	harvesterDriverVersion := "v1.0.4"
 	harvesterDriverChecksums := map[string]string{
-		"amd64": "cd380ba3f33f104523420d973c4dd724a0973bceec0b303f348ca03d446af506",
-		"arm64": "e9f853eeedcec687f618286f8ff45ba694cdc71ece9cf11600de931afa204779",
+		"amd64": "60a23fe77af75ceca84a0217e17e97a39ffa039c54c3f7871f3609159abe070e",
+		"arm64": "1e2265cbefee2682042ab2c5a365216af614ae9264485f6056c0be0dfc56d4d9",
 	}
 
 	harvesterDriverURL := fmt.Sprintf("https://github.com/harvester/docker-machine-driver-harvester/releases/download/%s/docker-machine-driver-harvester-%s.tar.gz",

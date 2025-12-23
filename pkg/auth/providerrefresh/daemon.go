@@ -1,15 +1,14 @@
 package providerrefresh
 
 import (
-	"context"
 	"fmt"
 	"time"
 
 	"github.com/pkg/errors"
+	apiv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/settings"
 	"github.com/rancher/rancher/pkg/auth/tokens"
 	exttokenstore "github.com/rancher/rancher/pkg/ext/stores/tokens"
-	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/types/config"
 	"github.com/robfig/cron"
 	"github.com/sirupsen/logrus"
@@ -20,18 +19,19 @@ var (
 	c   = cron.New()
 )
 
-func StartRefreshDaemon(ctx context.Context, scaledContext *config.ScaledContext, mgmtContext *config.ManagementContext) {
+func StartRefreshDaemon(scaledContext *config.ScaledContext, mgmtContext *config.ManagementContext) {
 	extTokenStore := exttokenstore.NewSystemFromWrangler(scaledContext.Wrangler)
 	refreshCronTime := settings.AuthUserInfoResyncCron.Get()
 	maxAge := settings.AuthUserInfoMaxAgeSeconds.Get()
 	ref = &refresher{
-		tokenLister:         mgmtContext.Management.Tokens("").Controller().Lister(),
-		tokens:              mgmtContext.Management.Tokens(""),
-		userLister:          mgmtContext.Management.Users("").Controller().Lister(),
-		tokenMGR:            tokens.NewManager(ctx, scaledContext),
-		userAttributes:      mgmtContext.Management.UserAttributes(""),
-		userAttributeLister: mgmtContext.Management.UserAttributes("").Controller().Lister(),
-		extTokenStore:       extTokenStore,
+		tokenLister:               mgmtContext.Management.Tokens("").Controller().Lister(),
+		tokens:                    mgmtContext.Management.Tokens(""),
+		userLister:                mgmtContext.Management.Users("").Controller().Lister(),
+		tokenMGR:                  tokens.NewManager(scaledContext.Wrangler),
+		userAttributes:            mgmtContext.Management.UserAttributes(""),
+		userAttributeLister:       mgmtContext.Management.UserAttributes("").Controller().Lister(),
+		extTokenStore:             extTokenStore,
+		ensureAndGetUserAttribute: scaledContext.UserManager.EnsureAndGetUserAttribute,
 	}
 
 	UpdateRefreshMaxAge(maxAge)
@@ -77,7 +77,7 @@ func RefreshAllForCron() {
 	ref.refreshAll(false)
 }
 
-func RefreshAttributes(attribs *v3.UserAttribute) (*v3.UserAttribute, error) {
+func RefreshAttributes(attribs *apiv3.UserAttribute) (*apiv3.UserAttribute, error) {
 	if ref == nil {
 		return nil, errors.Errorf("refresh daemon not yet initialized")
 	}

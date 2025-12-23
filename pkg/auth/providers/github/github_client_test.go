@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	apiv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/auth/providers/common"
 )
 
 func TestGitHubClientGetOrgTeams(t *testing.T) {
@@ -28,11 +29,11 @@ func TestGitHubClientGetOrgTeams(t *testing.T) {
 
 	gcClient := &GClient{httpClient: srv.Client()}
 
-	config := &v32.GithubConfig{
+	config := &apiv3.GithubConfig{
 		Hostname: srvURL.Host,
 	}
 
-	org := Account{
+	org := common.GitHubAccount{
 		ID:        9343010,
 		Login:     "org",
 		AvatarURL: srvURL.Host + "/u/9343010/avatar",
@@ -114,7 +115,7 @@ func TestGetUrlForOrgTeams(t *testing.T) {
 
 	gcClient := &GClient{httpClient: srv.Client()}
 
-	config := &v32.GithubConfig{
+	config := &apiv3.GithubConfig{
 		Hostname: srvURL.Host,
 	}
 

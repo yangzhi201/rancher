@@ -2,6 +2,7 @@ package fleetworkspace
 
 import (
 	"context"
+	"fmt"
 
 	fleet "github.com/rancher/fleet/pkg/apis/fleet.cattle.io/v1alpha1"
 	mgmt "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -18,9 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-var (
-	managed = "provisioning.cattle.io/managed"
-)
+var managed = "provisioning.cattle.io/managed"
 
 type handle struct {
 	workspaceCache mgmtcontrollers.FleetWorkspaceCache
@@ -28,7 +27,7 @@ type handle struct {
 	workspaces     mgmtcontrollers.FleetWorkspaceClient
 }
 
-func Register(ctx context.Context, clients *wrangler.CAPIContext) {
+func Register(ctx context.Context, clients *wrangler.Context) {
 	h := &handle{
 		workspaceCache: clients.Mgmt.FleetWorkspace().Cache(),
 		workspaces:     clients.Mgmt.FleetWorkspace(),
@@ -140,6 +139,11 @@ func (h *handle) onFleetObject(obj runtime.Object) error {
 		if apierror.IsAlreadyExists(err) {
 			return nil
 		}
+		if err != nil {
+			return fmt.Errorf("creating fleetworkspace: %w", err)
+		}
+
+		return nil
 	}
 
 	return err

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	RancherVersionDev                 = "2.13.99"
+	RancherVersionDev                 = "2.14.99"
 	DefaultMaxUIPluginFileSizeInBytes = 30 * 1024 * 1024 // 30MB
 	AgentTLSModeStrict                = "strict"
 	AgentTLSModeSystemStore           = "system-store"
@@ -59,6 +59,8 @@ var (
 		"cattle-telemetry-system",
 		"cattle-local-user-passwords",
 		"cattle-tokens",
+		"cattle-oidc-codes",
+		"cattle-oidc-client-secrets",
 	}
 
 	AgentImage          = NewSetting("agent-image", "rancher/rancher-agent:head")
@@ -93,21 +95,23 @@ var (
 	KubernetesVersionToSystemImages     = NewSetting("k8s-version-to-images", "")
 	KubernetesVersionsCurrent           = NewSetting("k8s-versions-current", "")
 	KubernetesVersionsDeprecated        = NewSetting("k8s-versions-deprecated", "")
-	KDMBranch                           = NewSetting("kdm-branch", "dev-v2.13")
+	KDMBranch                           = NewSetting("kdm-branch", "dev-v2.14")
 	MachineVersion                      = NewSetting("machine-version", "dev")
 	Namespace                           = NewSetting("namespace", os.Getenv("CATTLE_NAMESPACE"))
 	PasswordMinLength                   = NewSetting("password-min-length", "12")
 	PeerServices                        = NewSetting("peer-service", os.Getenv("CATTLE_PEER_SERVICE"))
 	RkeMetadataConfig                   = NewSetting("rke-metadata-config", getMetadataConfig())
+	KEv2Operators                       = NewSetting("kev2-operators", "{}")
 	ServerImage                         = NewSetting("server-image", "rancher/rancher")
 	ServerURL                           = NewSetting("server-url", "")
 	ServerVersion                       = NewSetting("server-version", "dev")
+	ServerVersionType                   = NewSetting("server-version-type", getVersionType())
 	SystemAgentVersion                  = NewSetting("system-agent-version", "")
 	WinsAgentVersion                    = NewSetting("wins-agent-version", "")
 	CSIProxyAgentVersion                = NewSetting("csi-proxy-agent-version", "")
 	CSIProxyAgentURL                    = NewSetting("csi-proxy-agent-url", "https://acs-mirror.azureedge.net/csi-proxy/%[1]s/binaries/csi-proxy-%[1]s.tar.gz")
-	SystemAgentInstallScript            = NewSetting("system-agent-install-script", "https://github.com/rancher/system-agent/releases/download/v0.3.14-rc.2/install.sh") // To ensure consistency between SystemAgentInstallScript default value and CATTLE_SYSTEM_AGENT_INSTALL_SCRIPT to utilize the local system-agent-install.sh script when both values are equal.
-	WinsAgentInstallScript              = NewSetting("wins-agent-install-script", "https://raw.githubusercontent.com/rancher/wins/v0.5.3-rc.2/install.ps1")
+	SystemAgentInstallScript            = NewSetting("system-agent-install-script", "https://github.com/rancher/system-agent/releases/download/v0.3.15-rc.1/install.sh") // To ensure consistency between SystemAgentInstallScript default value and CATTLE_SYSTEM_AGENT_INSTALL_SCRIPT to utilize the local system-agent-install.sh script when both values are equal.
+	WinsAgentInstallScript              = NewSetting("wins-agent-install-script", "https://raw.githubusercontent.com/rancher/wins/v0.5.3/install.ps1")
 	SystemAgentInstallerImage           = NewSetting("system-agent-installer-image", "") // Defined via environment variable
 	SystemAgentUpgradeImage             = NewSetting("system-agent-upgrade-image", "")   // Defined via environment variable
 	WinsAgentUpgradeImage               = NewSetting("wins-agent-upgrade-image", "")
@@ -123,7 +127,7 @@ var (
 	ClusterTemplateEnforcement          = NewSetting("cluster-template-enforcement", "false")
 	InitialDockerRootDir                = NewSetting("initial-docker-root-dir", "/var/lib/docker")
 	SystemCatalog                       = NewSetting("system-catalog", "external") // Options are 'external' or 'bundled'
-	ChartDefaultBranch                  = NewSetting("chart-default-branch", "dev-v2.13")
+	ChartDefaultBranch                  = NewSetting("chart-default-branch", "dev-v2.14")
 	SystemManagedChartsOperationTimeout = NewSetting("system-managed-charts-operation-timeout", "300s")
 	FleetDefaultWorkspaceName           = NewSetting("fleet-default-workspace-name", fleetconst.ClustersDefaultNamespace) // fleetWorkspaceName to assign to clusters with none
 	ShellImage                          = NewSetting("shell-image", buildconfig.DefaultShellVersion)
@@ -133,9 +137,9 @@ var (
 	EKSUpstreamRefreshCron              = NewSetting("eks-refresh-cron", "*/5 * * * *") // EKSUpstreamRefreshCron is deprecated and will be replaced by EKSUpstreamRefresh
 	EKSUpstreamRefresh                  = NewSetting("eks-refresh", "300")
 	GKEUpstreamRefresh                  = NewSetting("gke-refresh", "300")
-	AlibabaUpstreamRefresh              = NewSetting("alibabacloud-refresh", "300")
+	AlibabaUpstreamRefresh              = NewSetting("alibaba-refresh", "300")
 	HideLocalCluster                    = NewSetting("hide-local-cluster", "false")
-	MachineProvisionImage               = NewSetting("machine-provision-image", "rancher/machine:v0.15.0-rancher134")
+	MachineProvisionImage               = NewSetting("machine-provision-image", "rancher/machine:v0.15.0-rancher137")
 	SystemFeatureChartRefreshSeconds    = NewSetting("system-feature-chart-refresh-seconds", "21600")
 	ClusterAgentDefaultAffinity         = NewSetting("cluster-agent-default-affinity", ClusterAgentAffinity)
 	FleetAgentDefaultAffinity           = NewSetting("fleet-agent-default-affinity", FleetAgentAffinity)
@@ -248,6 +252,13 @@ var (
 	// RancherTurtlesVersion is the exact version of the rancher-turtles chart that Rancher will install.
 	RancherTurtlesVersion = NewSetting("rancher-turtles-version", "")
 
+	// ClusterAutoscalerChartRepository represents where the cluster-autoscaler chart will be pulled from for the downstream cluster(s)
+	// can be an OCI image path or a regular helm repo.
+	ClusterAutoscalerChartRepository = NewSetting("cluster-autoscaler-chart-repository", os.Getenv("CATTLE_CLUSTER_AUTOSCALER_CHART_REPOSITORY"))
+
+	// ClusterAutoscalerImage represents the default image repository for the cluster autoscaler
+	ClusterAutoscalerImage = NewSetting("cluster-autoscaler-image", os.Getenv("CATTLE_CLUSTER_AUTOSCALER_IMAGE"))
+
 	// RKE2ChartDefaultBranch represents the default branch for the RKE2 charts repo.
 	RKE2ChartDefaultBranch = NewSetting("rke2-chart-default-branch", "main")
 
@@ -356,6 +367,12 @@ var (
 
 	// UIPreferred Ensure that the new Dashboard is the default UI.
 	UIPreferred = NewSetting("ui-preferred", "vue")
+
+	// UIContentEnabled - configure UI Dynamic Content (true, log or debug)
+	UIContentEnabled = NewSetting("ui-content-enabled", "true")
+
+	// UIContentEndpoint - configure custom endpoint for UI Dynamic Content data
+	UIContentEndpoint = NewSetting("ui-content-endpoint", "")
 
 	// SkipHostedClusterChartInstallation controls whether the hosted cluster chart is installed on the server. Defaults to false.
 	// This setting is for development purposes only.
@@ -601,6 +618,14 @@ func getMetadataConfig() string {
 		return ""
 	}
 	return string(ans)
+}
+
+func getVersionType() string {
+	versionType := os.Getenv("RANCHER_VERSION_TYPE")
+	if versionType == "" {
+		return "dev"
+	}
+	return versionType
 }
 
 // GetSettingByID returns a setting that is stored with the given id.

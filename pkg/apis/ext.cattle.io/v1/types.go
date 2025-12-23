@@ -143,6 +143,8 @@ type TokenStatus struct {
 	// LastActivitySeen is the timestamp of the last time user activity
 	// (mouse movement, interaction, ...) was reported for the token.
 	LastActivitySeen *metav1.Time `json:"lastActivitySeen,omitempty"`
+	// Fully formed bearer token that is ready to use in the Authorization header to authenticate to Rancher.
+	BearerToken string `json:"bearerToken,omitempty"`
 }
 
 // Implement the TokenAccessor interface
@@ -274,6 +276,7 @@ type KubeconfigStatus struct {
 }
 
 // +genclient
+// +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // GroupMembershipRefreshRequest is used to initiate a user refresh action.
@@ -305,6 +308,7 @@ type GroupMembershipRefreshRequestStatus struct {
 }
 
 // +genclient
+// +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // PasswordChangeRequest is used to change the password for a local user.
@@ -340,6 +344,7 @@ type PasswordChangeRequestStatus struct {
 }
 
 // +genclient
+// +genclient:nonNamespaced
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // SelfUser is used to retrieve the current user information.

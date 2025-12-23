@@ -49,7 +49,7 @@ if [ -z "${SOME_K8S_VERSION}" ]; then
 # https://github.com/rancher/rancher/issues/36827 has added appDefaults. We do not use appDefaults
 # here for simplicity's sake, as it requires semver parsing & matching. The last release should
 # be good enough for our needs.
-export SOME_K8S_VERSION=$(curl -sS https://raw.githubusercontent.com/rancher/kontainer-driver-metadata/dev-v2.13/data/data.json | jq -r ".$DIST.releases[-1].version")
+export SOME_K8S_VERSION=$(curl -sS https://raw.githubusercontent.com/rancher/kontainer-driver-metadata/dev-v2.14/data/data.json | jq -r ".$DIST.releases[-1].version")
 fi
 
 if [ -z "${CATTLE_CHART_DEFAULT_URL}" ]; then
@@ -131,8 +131,8 @@ echo "Waiting up to 5 minutes for rancher-turtles deployment"
   --message-interval 30 `# Print the progress message below every 30 attempts (roughly every minute)` \
   --message "rancher-turtles was not available after {{elapsed}} seconds" `# Print this progress message` \
   --exit-command "dump_rancher_logs" `# Dump logs to find out why turtles did not start` \
-  "kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get ns rancher-turtles-system &>/dev/null \
-    && kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml rollout status -w -n rancher-turtles-system deploy/rancher-turtles-controller-manager &>/dev/null"
+  "kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get ns cattle-turtles-system &>/dev/null \
+    && kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml rollout status -w -n cattle-turtles-system deploy/rancher-turtles-controller-manager &>/dev/null"
 
 echo Running integrationsetup
 export CATTLE_TEST_CONFIG=$(pwd)/config.yaml # used by integration tests and test setup

@@ -8,9 +8,7 @@ import (
 	"github.com/rancher/rancher/pkg/apis/management.cattle.io"
 	apisV3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/controllers/managementuser/resourcequota"
-	coreFakes "github.com/rancher/rancher/pkg/generated/norman/core/v1/fakes"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
-	v3fakes "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3/fakes"
 	wfakes "github.com/rancher/wrangler/v3/pkg/generic/fake"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
@@ -546,25 +544,24 @@ func TestAsyncCleanupRBAC_NamespaceDeleted(t *testing.T) {
 			timesCalled := 0
 			nsTerminatingCount := 0
 
-			namespaceListerMock := &coreFakes.NamespaceListerMock{
-				GetFunc: func(namespace string, name string) (*corev1.Namespace, error) {
-					timesCalled++
-					if nsTerminatingCount < test.nsGetTerminatingCalls {
-						nsTerminatingCount++
-						return &corev1.Namespace{
-							TypeMeta: metav1.TypeMeta{},
-							ObjectMeta: metav1.ObjectMeta{
-								Name: "test-namespace",
-							},
-							Status: corev1.NamespaceStatus{
-								Phase: corev1.NamespaceTerminating,
-							},
-						}, nil
-					}
-					// indicate deleted namespace
-					return nil, apierrors.NewNotFound(schema.GroupResource{}, "")
-				},
-			}
+			namespaceListerMock := wfakes.NewMockNonNamespacedCacheInterface[*corev1.Namespace](ctrl)
+			namespaceListerMock.EXPECT().Get(gomock.Any()).DoAndReturn(func(name string) (*corev1.Namespace, error) {
+				timesCalled++
+				if nsTerminatingCount < test.nsGetTerminatingCalls {
+					nsTerminatingCount++
+					return &corev1.Namespace{
+						TypeMeta: metav1.TypeMeta{},
+						ObjectMeta: metav1.ObjectMeta{
+							Name: "test-namespace",
+						},
+						Status: corev1.NamespaceStatus{
+							Phase: corev1.NamespaceTerminating,
+						},
+					}, nil
+				}
+				// indicate deleted namespace
+				return nil, apierrors.NewNotFound(schema.GroupResource{}, "")
+			}).AnyTimes()
 
 			indexedRoles := []*rbacv1.ClusterRole{
 				createClusterRoleForProject("p-123xyz", namespaceName, "*"),
@@ -690,6 +687,15 @@ func TestEnsurePRTBAddToNamespace(t *testing.T) {
 					}, name)
 				},
 			)
+			pGetter := wfakes.NewMockCacheInterface[*apisV3.Project](ctrl)
+			pGetter.EXPECT().Get(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(namespace string, name string) (*v3.Project, error) {
+					return nil, apierrors.NewNotFound(schema.GroupResource{
+						Group:    "management.cattle.io",
+						Resource: "projects",
+					}, name)
+				},
+			)
 			lifecycle := nsLifecycle{
 				m: &manager{
 					crIndexer:   crIndexer,
@@ -697,14 +703,7 @@ func TestEnsurePRTBAddToNamespace(t *testing.T) {
 					rtLister:    rtLister,
 				},
 				rq: &resourcequota.SyncController{
-					ProjectLister: &v3fakes.ProjectListerMock{
-						GetFunc: func(namespace string, name string) (*v3.Project, error) {
-							return nil, apierrors.NewNotFound(schema.GroupResource{
-								Group:    "management.cattle.io",
-								Resource: "projects",
-							}, name)
-						},
-					},
+					ProjectCache: pGetter,
 				},
 			}
 			hasPRTBs, err := lifecycle.ensurePRTBAddToNamespace(&corev1.Namespace{

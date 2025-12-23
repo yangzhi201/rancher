@@ -2,7 +2,8 @@ import pytest
 import rancher
 import requests
 import time
-from .conftest import SERVER_PASSWORD, BASE_URL, AUTH_URL, protect_response
+from .conftest import SERVER_PASSWORD, BASE_URL, AUTH_URL, \
+                    AUTH_URL_V1, protect_response
 
 
 def test_certificates(admin_mc):
@@ -69,19 +70,41 @@ def test_kubeconfig_token_ttl(admin_mc, user_mc):
         id="kubeconfig-default-token-ttl-minutes",
         value=kubeconfig_ttl_mins)
 
+    # /v3-public endpoint (deprecated)
     # call login action for kubeconfig token
     kubeconfig_token = login()
-    ttl1, token1 = get_token_and_ttl(kubeconfig_token)
-    assert ttl1 == kubeconfig_ttl_mins
+    assert kubeconfig_token["token"] != ""
+    assert kubeconfig_token["expiresAt"] != ""
+    assert kubeconfig_token["id"] != ""
+    assert kubeconfig_token["token"].startswith(kubeconfig_token["id"])
+    assert kubeconfig_token["type"] == "token"
+    assert kubeconfig_token["baseType"] == "token"
 
     # wait for token to expire
     time.sleep(kubeconfig_ttl_mins*60)
 
     # confirm new kubeconfig token gets generated
     kubeconfig_token2 = login()
-    ttl2, token2 = get_token_and_ttl(kubeconfig_token2)
-    assert ttl2 == kubeconfig_ttl_mins
-    assert token1 != token2
+    assert kubeconfig_token2["token"] != ""
+    assert kubeconfig_token2["expiresAt"] != ""
+
+    # make sure new token is different
+    assert kubeconfig_token["token"] != kubeconfig_token2["token"]
+
+    time.sleep(kubeconfig_ttl_mins*60)
+
+    # /v1-public endpoint
+    kubeconfig_token = login_v1()
+    assert kubeconfig_token["token"] != ""
+    assert kubeconfig_token["expiresAt"] != ""
+
+    # wait for token to expire
+    time.sleep(kubeconfig_ttl_mins*60)
+
+    # confirm new kubeconfig token gets generated
+    kubeconfig_token2 = login_v1()
+    assert kubeconfig_token2["token"] != ""
+    assert kubeconfig_token2["expiresAt"] != ""
 
     # reset kubeconfig ttl setting
     client.update_by_id_setting(id="kubeconfig-default-token-ttl-minutes",
@@ -101,10 +124,15 @@ def login():
     return r.json()
 
 
-def get_token_and_ttl(token):
-    token1_ttl_mins = mins(int(token["ttl"]))
-    token1_token = token["token"]
-    return token1_ttl_mins, token1_token
+def login_v1():
+    r = requests.post(AUTH_URL_V1, json={
+        'type': 'localProvider',
+        'username': 'admin',
+        'password': SERVER_PASSWORD,
+        'responseType': 'kubeconfig',
+    }, verify=False)
+    protect_response(r)
+    return r.json()
 
 
 def mins(time_millisec):

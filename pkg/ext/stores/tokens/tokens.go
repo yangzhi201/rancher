@@ -49,6 +49,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/kubernetes/pkg/printers"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
+	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 )
 
 const (
@@ -439,6 +440,7 @@ func (t *Store) Get(
 
 	token.Status.Current = token.Name == authTokenID
 	token.Status.Value = ""
+	token.Status.BearerToken = ""
 
 	return token, nil
 }
@@ -753,13 +755,14 @@ func (t *SystemStore) Create(ctx context.Context, group schema.GroupResource, to
 			newSecret.Name, err))
 	}
 
-	// The newly created token is not the request token
+	// The newly created token is not the request token.
 	newToken.Status.Current = false
 
-	// users don't care about the hashed value, just the secret
-	// here is the only place the secret is returned and disclosed.
+	// Users don't care about the hashed value, just the secret
 	newToken.Status.Hash = ""
+	// This is the only place where the secret value is returned.
 	newToken.Status.Value = tokenValue
+	newToken.Status.BearerToken = fmt.Sprintf("ext/%s:%s", newToken.Name, tokenValue)
 
 	return newToken, nil
 }
@@ -772,6 +775,7 @@ func (t *SystemStore) Delete(name string, options *metav1.DeleteOptions) error {
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
+
 	return apierrors.NewInternalError(fmt.Errorf("failed to delete token %s: %w", name, err))
 }
 
@@ -794,6 +798,8 @@ func (t *SystemStore) Get(name, authTokenID string, options *metav1.GetOptions) 
 
 	token.Status.Current = token.Name == authTokenID
 	token.Status.Value = ""
+	token.Status.BearerToken = ""
+
 	return token, nil
 }
 
@@ -954,10 +960,9 @@ func (t *SystemStore) update(authTokenID string, fullPermission bool, oldToken, 
 	}
 
 	// Keep the status of the resource unchanged, never store a token value, etc.
-	// IOW changes to hash, value, etc. are all ignored without a peep.
 	token.Status = oldToken.Status
 	token.Status.Value = ""
-	// Refresh time of last update to current.
+	token.Status.BearerToken = ""
 	token.Status.LastUpdateTime = t.timer.Now()
 
 	secret, err := toSecret(token)
@@ -1010,7 +1015,7 @@ func (t *SystemStore) UpdateLastUsedAt(name string, now time.Time) error {
 
 // UpdateLastActivitySeen patches the last-activity-seen information of the token.
 // Called from the ext user activity store.
-func (t *SystemStore) UpdateLastActivitySeen(name string, now time.Time) error {
+func (t *SystemStore) UpdateLastActivitySeen(name string, now time.Time) (*ext.Token, error) {
 	// Operate directly on the backend secret holding the token
 	nowEncoded := base64.StdEncoding.EncodeToString([]byte(now.Format(time.RFC3339)))
 	patch, err := json.Marshal([]struct {
@@ -1023,11 +1028,20 @@ func (t *SystemStore) UpdateLastActivitySeen(name string, now time.Time) error {
 		Value: nowEncoded,
 	}})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("failed to marshal the patch: %w", err)
 	}
 
-	_, err = t.secretClient.Patch(TokenNamespace, name, types.JSONPatchType, patch)
-	return err
+	patched, err := t.secretClient.Patch(TokenNamespace, name, types.JSONPatchType, patch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to patch the token to set last activity seen: %w", err)
+	}
+
+	token, err := fromSecret(patched)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token from secret: %w", err)
+	}
+
+	return token, nil
 }
 
 // Disable patches the enabled flag of the token.
@@ -1539,6 +1553,12 @@ func toSecret(token *ext.Token) (*corev1.Secret, error) {
 	secret.StringData[FieldLastUpdateTime] = token.Status.LastUpdateTime
 	secret.StringData[FieldLastActivitySeen] = ""
 
+	secret.ObjectMeta.ManagedFields, err = extcommon.MapManagedFields(mapFromToken,
+		token.ObjectMeta.ManagedFields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to map token managed-fields: %w", err)
+	}
+
 	return secret, nil
 }
 
@@ -1618,6 +1638,12 @@ func fromSecret(secret *corev1.Secret) (*ext.Token, error) {
 
 	if err := setExpired(token); err != nil {
 		return nil, fmt.Errorf("failed to set expiration information: %w", err)
+	}
+
+	token.ObjectMeta.ManagedFields, err = extcommon.MapManagedFields(mapFromSecret,
+		token.ObjectMeta.ManagedFields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to map secret managed-fields: %w", err)
 	}
 
 	return token, nil
@@ -1734,4 +1760,56 @@ var (
 	_ rest.Scoper                   = &Store{}
 	_ rest.SingularNameProvider     = &Store{}
 	_ rest.GroupVersionKindProvider = &Store{}
+)
+
+var (
+	pathSecData        = fieldpath.MakePathOrDie("data")
+	pathSecDescription = fieldpath.MakePathOrDie("data", FieldDescription)
+	pathSecEnabled     = fieldpath.MakePathOrDie("data", FieldEnabled)
+	pathSecHash        = fieldpath.MakePathOrDie("data", FieldHash)
+	pathSecKind        = fieldpath.MakePathOrDie("data", FieldKind)
+	pathSecUID         = fieldpath.MakePathOrDie("data", FieldUID)
+	pathSecLAS         = fieldpath.MakePathOrDie("data", FieldLastActivitySeen)
+	pathSecLUT         = fieldpath.MakePathOrDie("data", FieldLastUpdateTime)
+	pathSecLUA         = fieldpath.MakePathOrDie("data", FieldLastUsedAt)
+	pathSecPrincipal   = fieldpath.MakePathOrDie("data", FieldPrincipal)
+	pathSecTTL         = fieldpath.MakePathOrDie("data", FieldTTL)
+	pathSecUserID      = fieldpath.MakePathOrDie("data", FieldUserID)
+
+	pathSecLabelKind = fieldpath.MakePathOrDie("metadata", "labels", SecretKindLabel)
+
+	pathTokDescription = fieldpath.MakePathOrDie("spec", "description")
+	pathTokEnabled     = fieldpath.MakePathOrDie("spec", "enabled")
+	pathTokKind        = fieldpath.MakePathOrDie("spec", "kind")
+	pathTokPrincipal   = fieldpath.MakePathOrDie("spec", "userPrincipal")
+	pathTokTTL         = fieldpath.MakePathOrDie("spec", "ttl")
+	pathTokUserID      = fieldpath.MakePathOrDie("spec", "userID")
+
+	// secret data reported as status is dropped by the map, as is .data itself
+	// The .type and .metadata pass as-is, except for pathSecLabelKind
+	mapFromSecret = extcommon.MapSpec{
+		pathSecData.String():        nil,
+		pathSecDescription.String(): pathTokDescription,
+		pathSecEnabled.String():     pathTokEnabled,
+		pathSecHash.String():        nil,
+		pathSecKind.String():        pathTokKind,
+		pathSecHash.String():        nil,
+		pathSecLAS.String():         nil,
+		pathSecLUT.String():         nil,
+		pathSecLUA.String():         nil,
+		pathSecPrincipal.String():   pathTokPrincipal,
+		pathSecTTL.String():         pathTokTTL,
+		pathSecUID.String():         nil,
+		pathSecUserID.String():      pathTokUserID,
+		pathSecLabelKind.String():   nil,
+	}
+
+	mapFromToken = extcommon.MapSpec{
+		pathTokDescription.String(): pathSecDescription,
+		pathTokEnabled.String():     pathSecEnabled,
+		pathTokKind.String():        pathSecKind,
+		pathTokPrincipal.String():   pathSecPrincipal,
+		pathTokTTL.String():         pathSecTTL,
+		pathTokUserID.String():      pathSecUserID,
+	}
 )

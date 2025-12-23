@@ -163,6 +163,10 @@ type RKEConfig struct {
 }
 
 // RKEMachinePool is the configuration for a RKE2/K3s machine pool within a provisioning cluster.
+// +kubebuilder:validation:XValidation:rule="!has(self.controlPlaneRole) || !self.controlPlaneRole || !has(self.autoscalingMinSize) || self.autoscalingMinSize > 0", message="AutoscalingMinSize must be greater than 0 when ControlPlaneRole is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.etcdRole) || !self.etcdRole || !has(self.autoscalingMinSize) || self.autoscalingMinSize > 0", message="AutoscalingMinSize must be greater than 0 when EtcdRole is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.autoscalingMaxSize) || !has(self.autoscalingMinSize) || self.autoscalingMinSize <= self.autoscalingMaxSize", message="AutoscalingMinSize must be less than or equal to AutoscalingMaxSize when both are non-nil"
+// +kubebuilder:validation:XValidation:rule="(has(self.autoscalingMinSize) && has(self.autoscalingMaxSize)) || (!has(self.autoscalingMinSize) && !has(self.autoscalingMaxSize))", message="AutoscalingMinSize and AutoscalingMaxSize must both be set if enabling cluster-autoscaling"
 type RKEMachinePool struct {
 	rkev1.RKECommonNodeConfig `json:",inline"`
 
@@ -247,6 +251,18 @@ type RKEMachinePool struct {
 	// +nullable
 	// +optional
 	MachineDeploymentAnnotations map[string]string `json:"machineDeploymentAnnotations,omitempty"`
+
+	// AutoscalingMinSize is the autoscaler min node size, this maps
+	// to the autoscaling annotations which are mapped to the CAPI machineDeployment object
+	// +nullable
+	// +optional
+	AutoscalingMinSize *int32 `json:"autoscalingMinSize,omitempty"`
+
+	// AutoscalingMaxSize is the autoscaler max node size, this maps
+	// to the autoscaling annotations which are mapped to the CAPI machineDeployment object
+	// +nullable
+	// +optional
+	AutoscalingMaxSize *int32 `json:"autoscalingMaxSize,omitempty"`
 
 	// NodeStartupTimeout allows setting the maximum time for
 	// MachineHealthCheck to consider a Machine unhealthy if a corresponding
@@ -504,7 +520,7 @@ type ClusterStatus struct {
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=".spec.kubernetesVersion"
 // +kubebuilder:printcolumn:name="Cluster Name",type=string,JSONPath=".status.clusterName"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:printcolumn:name="Kubeconfig",type=date,JSONPath=".status.clientSecretName"
+// +kubebuilder:printcolumn:name="Kubeconfig",type=string,JSONPath=".status.clientSecretName"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.ready"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 

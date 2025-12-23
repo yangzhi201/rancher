@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"time"
 
 	yaml2 "github.com/ghodss/yaml"
 	"github.com/rancher/norman/types/convert"
 	"github.com/rancher/norman/types/values"
-	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
+	corew "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,7 +30,7 @@ func findNamespaceCreates(inputYAML string) ([]string, error) {
 
 	reader := yaml.NewDocumentDecoder(noopCloser{Reader: bytes.NewBufferString(inputYAML)})
 	for {
-		next, readErr := ioutil.ReadAll(reader)
+		next, readErr := io.ReadAll(reader)
 		if readErr != nil && readErr != io.ErrShortBuffer {
 			return nil, readErr
 		}
@@ -86,7 +85,7 @@ func findNamespaceCreates(inputYAML string) ([]string, error) {
 	return newNamespaces, nil
 }
 
-func waitForNS(nsClient v1.NamespaceInterface, namespaces []string) {
+func waitForNS(nsClient corew.NamespaceClient, namespaces []string) {
 	for i := 0; i < 3; i++ {
 		allGood := true
 		for _, ns := range namespaces {
@@ -122,8 +121,8 @@ func waitForNS(nsClient v1.NamespaceInterface, namespaces []string) {
 
 		if allGood {
 			break
-		} else {
-			time.Sleep(2 * time.Second)
 		}
+
+		time.Sleep(2 * time.Second)
 	}
 }
